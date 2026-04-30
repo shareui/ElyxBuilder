@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ElyxBuilder"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6.0"]
+
+[project.scripts]
+elyb = "elyb.cli:main"
+
+[tool.setuptools]
+packages = ["elyb", "elyb.cmds"]
+
+[tool.setuptools.package-dir]
+elyb = "src"
+"elyb.cmds" = "src/cmds"
+
+[tool.setuptools.package-data]
+elyb = ["config.json"]
