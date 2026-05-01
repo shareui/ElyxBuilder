@@ -8,6 +8,8 @@ import sys
 import zipfile
 import yaml
 
+from elyb.cmds.stats import incrementBuildStats, incrementFailedBuildStats
+
 def loadYaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -188,7 +190,7 @@ def checkAst(sourceDir: str, verbose: bool, log) -> bool:
     return True
 
 
-def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None):
+def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None):
     def log(msg: str) -> None:
         if verbose:
             print(f"{DIM}{msg}{RESET}")
@@ -230,6 +232,13 @@ def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool =
     if not os.path.isdir(builderDir):
         fail(f"builder directory not found: {builderDir}")
         return
+
+    # redefine fail to also track the error in stats
+    def failTracked(msg: str) -> None:
+        print(f"{RED}error: {msg}{RESET}")
+        incrementFailedBuildStats(builderDir)
+
+    fail = failTracked
 
     configPath = os.path.join(builderDir, "config.yml")
     log(f"looking for config: {configPath}")
@@ -320,6 +329,7 @@ def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool =
         sourceDir = os.path.join(cwd, sourceRelPath)
         log(f"ast: scanning {sourceDir}")
         if not checkAst(sourceDir, verbose, log):
+            incrementFailedBuildStats(builderDir)
             return
 
     if compileFlag:
@@ -340,6 +350,7 @@ def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool =
 
         ok, _ = compileSourceFiles(sourceDir, cacheDir, ignoreAbsPaths, log)
         if not ok:
+            incrementFailedBuildStats(builderDir)
             return
 
     fileCount = 0
@@ -354,6 +365,10 @@ def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool =
 
         for root, dirs, files in os.walk(pluginDir):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
+            if noFolder and os.path.normpath(root) == os.path.normpath(builderDir):
+                dirs.clear()
+                log(f"  - {os.path.relpath(root, arcBase).replace(os.sep, '/')}/ (--no-folder)")
+                continue
 
             relDir = os.path.relpath(root, arcBase).replace(os.sep, "/")
             dirInfo = zipfile.ZipInfo(relDir + "/")
@@ -392,5 +407,6 @@ def runBuild(noAssets: bool = False, verbose: bool = False, checkAstFlag: bool =
     if verbose:
         log(f"packed {fileCount} file(s), skipped {skippedCount} file(s)")
 
+    incrementBuildStats(builderDir, compileFlag)
     relArchivePath = os.path.join("builds", archiveName)
     print(f"{GREEN}Successful build at {relArchivePath}!{RESET}")

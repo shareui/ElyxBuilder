@@ -2,21 +2,24 @@ import argparse
 import sys
 
 from elyb.cmds.version import runVersion
-from elyb.cmds.new import runNew
+from elyb.cmds.new import runNew, runInteractive
 from elyb.cmds.build import runBuild
 from elyb.cmds.cached import runCached
 from elyb.cmds.ignore import runAddIgnore, runDelIgnore
+from elyb.cmds.stats import runStatBuilds, runStatLines, runStatSize, runStatFiles
 
 def buildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="elyb")
     parser.add_argument("-v", "--version", action="store_true", help="show version")
     subparsers = parser.add_subparsers(dest="command")
     newParser = subparsers.add_parser("new", help="create new plugin from template")
-    newParser.add_argument("pluginname", help="plugin name")
-    newParser.add_argument("author", help="author id")
-    newParser.add_argument("-zf", "--zipformat", default="eaf", help="zip format (default: eaf)")
+    newParser.add_argument("-g", "--gen", action="store_true", dest="gen", help="fast generation (non-interactive)")
+    newParser.add_argument("-n", "--name", dest="pluginname", help="plugin name (required with --gen)")
+    newParser.add_argument("-a", "--author", dest="author", help="author id (required with --gen)")
+    newParser.add_argument("-zf", "--zipformat", default="eaf", help="zip format (default: eaf, only with --gen)")
     buildParser = subparsers.add_parser("build", help="build plugin into archive")
     buildParser.add_argument("--no-assets", action="store_true", dest="noAssets", help="exclude optionalAssets from archive")
+    buildParser.add_argument("-nf", "--no-folder", action="store_true", dest="noFolder", help="exclude elyxbuilder directory from archive")
     buildParser.add_argument("-v", "--verbose", action="store_true", dest="verbose", help="print build log")
     buildParser.add_argument("-r", "--reset", action="store_true", dest="reset", help="clear compilation cache before build (requires --compile)")
     buildParser.add_argument("-p", "--password", nargs=2, metavar=("METHOD", "PASSWORD"), dest="encrypt", help="encrypt archive (e.g. -p aes-256 mypassword)")
@@ -24,6 +27,18 @@ def buildParser() -> argparse.ArgumentParser:
     buildModeGroup.add_argument("-a", "--ast", action="store_true", dest="checkAst", help="check .py files in source via AST before build")
     buildModeGroup.add_argument("-c", "--compile", action="store_true", dest="compile", help="compile .py files to .pyc and include in archive")
     subparsers.add_parser("cached", help="show which source files have changed since last compilation")
+    statsParser = subparsers.add_parser("stats", help="project statistics")
+    statsSubparsers = statsParser.add_subparsers(dest="statsCommand")
+    statsSubparsers.add_parser("builds", help="show build counts")
+    linesParser = statsSubparsers.add_parser("lines", help="count lines of code")
+    linesParser.add_argument("-a", "--all", action="store_true", dest="allMode", help="count all non-binary files in plugin root")
+    linesParser.add_argument("-add", "--additional", nargs="+", dest="additionalDirs", metavar="DIR", default=[], help="additional directories to include (relative to cwd, only with --all)")
+    sizeParser = statsSubparsers.add_parser("size", help="count file sizes")
+    sizeParser.add_argument("-a", "--all", action="store_true", dest="allMode", help="count all non-binary files in plugin root")
+    sizeParser.add_argument("-add", "--additional", nargs="+", dest="additionalDirs", metavar="DIR", default=[], help="additional directories to include (relative to cwd, only with --all)")
+    filesParser = statsSubparsers.add_parser("files", help="count files by extension")
+    filesParser.add_argument("-a", "--all", action="store_true", dest="allMode", help="include refmap.yml and additional directories")
+    filesParser.add_argument("-add", "--additional", nargs="+", dest="additionalDirs", metavar="DIR", default=[], help="additional directories to include (relative to cwd, only with --all)")
     addIgnoreParser = subparsers.add_parser("add-ignore", help="add path to an ignore list in config.yml")
     addIgnoreParser.add_argument("path", help="path to add (Unix-style)")
     addIgnoreGroup = addIgnoreParser.add_mutually_exclusive_group(required=True)
@@ -45,14 +60,88 @@ def main():
         runVersion()
         return
     if args.command == "new":
-        runNew(args.pluginname, args.author, args.zipformat)
+        if args.gen:
+            if not args.pluginname or not args.author:
+                print("error: pluginname and author are required with --gen")
+                sys.exit(1)
+            runNew(args.pluginname, args.author, args.zipformat)
+        else:
+            runInteractive()
         return
     if args.command == "build":
         encryptMethod, encryptPassword = (args.encrypt[0], args.encrypt[1]) if args.encrypt else (None, None)
-        runBuild(args.noAssets, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword)
+        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword)
         return
     if args.command == "cached":
         runCached()
+        return
+    if args.command == "stats":
+        if args.statsCommand in ("builds", "lines", "size", "files"):
+            import os
+            import yaml
+            cwd = os.getcwd()
+            refmapPath = os.path.join(cwd, "refmap.yml")
+            if not os.path.exists(refmapPath):
+                print("error: refmap.yml not found in current directory")
+                sys.exit(1)
+            with open(refmapPath, "r", encoding="utf-8") as f:
+                refmap = yaml.safe_load(f)
+            builderRelPath = refmap.get("elyxbuilder")
+            if not builderRelPath:
+                print("error: refmap.yml missing key: elyxbuilder")
+                sys.exit(1)
+            builderDir = os.path.join(cwd, builderRelPath)
+            if args.statsCommand == "builds":
+                runStatBuilds(builderDir)
+            elif args.statsCommand == "files":
+                metaRelPath = refmap.get("metainfo")
+                if not metaRelPath:
+                    print("error: refmap.yml missing key: metainfo")
+                    sys.exit(1)
+                metaPath = os.path.join(cwd, metaRelPath)
+                if not os.path.exists(metaPath):
+                    print(f"error: meta.yml not found: {metaPath}")
+                    sys.exit(1)
+                with open(metaPath, "r", encoding="utf-8") as f:
+                    meta = yaml.safe_load(f)
+                pluginName = meta.get("name", "unknown")
+                pluginDir = os.path.dirname(builderDir)
+                runStatFiles(pluginDir, pluginName, cwd, refmapPath, args.allMode, args.additionalDirs, builderDir)
+            else:
+                metaRelPath = refmap.get("metainfo")
+                if not metaRelPath:
+                    print("error: refmap.yml missing key: metainfo")
+                    sys.exit(1)
+                metaPath = os.path.join(cwd, metaRelPath)
+                if not os.path.exists(metaPath):
+                    print(f"error: meta.yml not found: {metaPath}")
+                    sys.exit(1)
+                with open(metaPath, "r", encoding="utf-8") as f:
+                    meta = yaml.safe_load(f)
+                pluginName = meta.get("name", "unknown")
+                pluginDir = os.path.dirname(builderDir)
+                configPath = os.path.join(builderDir, "config.yml")
+                if not os.path.exists(configPath):
+                    print(f"error: config.yml not found in {builderDir}")
+                    sys.exit(1)
+                with open(configPath, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f)
+                sourceRelPath = config.get("source")
+                if not sourceRelPath:
+                    print("error: config.yml missing key: source")
+                    sys.exit(1)
+                if args.statsCommand == "lines":
+                    runStatLines(
+                        pluginDir, sourceRelPath, pluginName, cwd, refmapPath,
+                        args.allMode, args.additionalDirs, builderDir,
+                    )
+                else:
+                    runStatSize(
+                        pluginDir, sourceRelPath, pluginName, cwd, refmapPath,
+                        args.allMode, args.additionalDirs, builderDir,
+                    )
+        else:
+            parser.parse_args(["stats", "--help"])
         return
     if args.command == "add-ignore":
         runAddIgnore(args.path, args.target)

@@ -2,6 +2,9 @@ import json
 import os
 import re
 
+CYAN = "\033[96m"
+RESET = "\033[0m"
+
 
 def normalizeName(raw: str) -> str:
     # remove chars except space, _, -, A-Z, a-z, 0-9
@@ -29,10 +32,67 @@ def loadConfig() -> dict:
         return json.load(f)
 
 
+def promptField(label: str, default: str) -> str:
+    # show label with default in cyan, return user input or default if empty
+    raw = input(f"{label}[{CYAN}{default}{RESET}] ~> ")
+    return raw.strip() if raw.strip() else default
+
+
+def runInteractive():
+    cfg = loadConfig()
+    print("Enter an empty string to apply the value in [].\n")
+
+    pluginname = promptField("name ", "MyPlugin")
+    normalized = normalizeName(pluginname)
+
+    defaultAuthor = "NoName"
+    author = promptField("author ", defaultAuthor)
+    normalizedAuthor = normalizeName(author)
+
+    pluginId = f"{normalizedAuthor}_{normalized}"
+    if len(pluginId) > 32:
+        pluginId = pluginId[:32]
+    pluginId = promptField("id ", pluginId)
+
+    version = promptField("version ", "0.1.0")
+    appVersion = promptField("app_version ", cfg["appVersion"])
+    sdkVersion = promptField("sdk_version ", cfg["sdkVersion"])
+    elyxVersion = promptField("elyx_version ", cfg["elyxVersion"])
+    zipFormat = promptField("zipFormat ", "eaf")
+    iconRaw = promptField("icon (leave empty to skip) ", "")
+
+    writePlugin(pluginname, normalized, author, pluginId, version, appVersion, sdkVersion, elyxVersion, zipFormat, iconRaw)
+
+
 def runNew(pluginname: str, author: str, zipFormat: str = "eaf"):
     normalized = normalizeName(pluginname)
-    base = normalized
+    normalizedAuthor = normalizeName(author)
     cfg = loadConfig()
+
+    pluginId = f"{normalizedAuthor}_{normalized}"
+    if len(pluginId) > 32:
+        pluginId = pluginId[:32]
+
+    writePlugin(
+        pluginname, normalized, author, pluginId,
+        "0.1.0", cfg["appVersion"], cfg["sdkVersion"], cfg["elyxVersion"],
+        zipFormat, ""
+    )
+
+
+def writePlugin(
+    pluginname: str,
+    normalized: str,
+    author: str,
+    pluginId: str,
+    version: str,
+    appVersion: str,
+    sdkVersion: str,
+    elyxVersion: str,
+    zipFormat: str,
+    icon: str
+):
+    base = normalized
 
     writeFile(
         f"{base}/.elyxbuilder/config.yml",
@@ -56,22 +116,19 @@ def runNew(pluginname: str, author: str, zipFormat: str = "eaf"):
         '{\n  "description": "Введите описание плагина"\n}\n'
     )
 
-    normalizedAuthor = normalizeName(author)
-    pluginId = f"{normalizedAuthor}_{normalized}"
-    if len(pluginId) > 32:
-        pluginId = pluginId[:32]
+    iconLine = f'icon: {icon}\n' if icon else '# icon: \n'
     # name field uses raw pluginname (not normalized)
     writeFile(
         f"{base}/meta.yml",
         f'name: {pluginname}\n'
         f'description: "{{description}}"\n'
         f'id: {pluginId}\n'
-        f'version: "0.1.0"\n'
-        f'author: "Enter your name"\n'
-        f'app_version: "{cfg["appVersion"]}"\n'
-        f'sdk_version: "{cfg["sdkVersion"]}"\n'
-        f'elyx_version: "{cfg["elyxVersion"]}"\n'
-        f'# icon: \n'
+        f'version: "{version}"\n'
+        f'author: "{author}"\n'
+        f'app_version: "{appVersion}"\n'
+        f'sdk_version: "{sdkVersion}"\n'
+        f'elyx_version: "{elyxVersion}"\n'
+        f'{iconLine}'
     )
 
     os.makedirs(f"{base}/res", exist_ok=True)
