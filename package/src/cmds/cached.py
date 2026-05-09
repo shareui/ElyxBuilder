@@ -71,7 +71,7 @@ def runCached() -> None:
         sys.exit(1)
 
     sourceDir = os.path.join(cwd, sourceRelPath)
-    cacheDir = os.path.join(builderDir, "cache", "python311")
+    cacheDir = os.path.join(cwd, ".elyx", "cache", "python311")
     manifestPath = os.path.join(cacheDir, "manifest.json")
 
     if not os.path.exists(manifestPath):
@@ -83,8 +83,8 @@ def runCached() -> None:
     rawIgnore = config.get("compilationIgnore") or []
     ignoreAbsPaths = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnore}
 
-    cacheDirDisplay = os.path.join(builderRelPath, "cache", "python311").replace(os.sep, "/")
-    print(f"Cache: {cacheDirDisplay}\n")
+    cacheDirDisplay = os.path.join(".elyx", "cache", "python311").replace(os.sep, "/")
+    print(f"Cache: {cacheDirDisplay}")
 
     counts = {"modified": 0, "new": 0, "ok": 0, "ignored": 0}
     rows: list[tuple[str, str, str]] = []

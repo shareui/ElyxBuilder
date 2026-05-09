@@ -1,5 +1,6 @@
 {
   "sdkVersion": ">=1.4.3.2",
   "appVersion": ">=12.5.1",
-  "elyxVersion": ">=0.9.2b"
+  "elyxVersion": ">=0.9.2b",
+  "compilePythonVer": "3.11"
 }

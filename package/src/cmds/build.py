@@ -1,5 +1,6 @@
 import ast
 import fnmatch
+import importlib.metadata
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import sys
 import zipfile
 import yaml
 
-from elyb.cmds.stats import incrementBuildStats, incrementFailedBuildStats
+from elyb.cmds.stats import incrementBuildStats, incrementFailedBuildStats, loadStats
 
 def loadYaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -101,6 +102,40 @@ def saveManifest(manifestPath: str, manifest: dict) -> None:
     with open(manifestPath, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
+def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer: str) -> str:
+    # reads meta.yml and appends elyxbuilder info block, returns patched content
+    with open(metaPath, "r", encoding="utf-8") as f:
+        original = f.read()
+    try:
+        version = importlib.metadata.version("ElyxBuilder")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    import datetime
+    import hashlib
+    buildDate = datetime.date.today().isoformat()
+    sourceDir = os.path.dirname(metaPath)
+    hasher = hashlib.sha256()
+    for root, dirs, files in os.walk(sourceDir):
+        dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+        for file in sorted(files):
+            if file.endswith(".py"):
+                absPath = os.path.join(root, file)
+                with open(absPath, "rb") as f:
+                    hasher.update(f.read())
+    sourceHash = hasher.hexdigest()
+    lines = [
+        "",
+        "# elyxbuilder info",
+        f"compiled: {'true' if compiled else 'false'}",
+        f"buildNum: {buildNum}",
+        f"buildDate: {buildDate}",
+        f"pythonVer: {compilePythonVer}",
+        f"sourceHash: {sourceHash} # Sha256",
+        f"elybVer: {version}",
+    ]
+    return original.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+
+
 def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log) -> tuple[bool, dict]:
     python311 = findPython311()
     if python311 is None:
@@ -147,7 +182,7 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
             os.makedirs(os.path.dirname(pycAbsPath), exist_ok=True)
             result = subprocess.run(
                 [python311, "-c",
-                 f"import py_compile; py_compile.compile({absPath!r}, cfile={pycAbsPath!r}, doraise=True)"],
+                 f"import py_compile; py_compile.compile({absPath!r}, cfile={pycAbsPath!r}, dfile={relPath!r}, doraise=True)"],
                 capture_output=True,
                 text=True,
             )
@@ -190,7 +225,7 @@ def checkAst(sourceDir: str, verbose: bool, log) -> bool:
     return True
 
 
-def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None):
+def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None, noInfo: bool = False):
     def log(msg: str) -> None:
         if verbose:
             print(f"{DIM}{msg}{RESET}")
@@ -249,6 +284,11 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
 
     config = loadYaml(configPath)
     log("config.yml loaded")
+
+    elyxConfigPath = os.path.join(os.path.dirname(__file__), "..", "config.json")
+    with open(elyxConfigPath, "r", encoding="utf-8") as f:
+        elyxConfig = json.load(f)
+    compilePythonVer = elyxConfig.get("compilePythonVer", "3.11")
 
     excludedAssets: set[str] = set()
     if noAssets:
@@ -337,7 +377,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
             fail("config.yml missing key: source (required for --compile)")
             return
         sourceDir = os.path.join(cwd, sourceRelPath)
-        cacheDir = os.path.join(builderDir, "cache", "python311")
+        cacheDir = os.path.join(cwd, ".elyx", "cache", "python311")
 
         if resetCache and os.path.exists(cacheDir):
             import shutil
@@ -352,6 +392,10 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         if not ok:
             incrementFailedBuildStats(builderDir)
             return
+
+    statsPath = os.path.join(builderDir, "stats.yml")
+    buildNum = loadStats(statsPath)["builds"] + 1
+    metaAbsPath = os.path.normpath(metaPath)
 
     fileCount = 0
     skippedCount = 0
@@ -400,8 +444,13 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                     log(f"  + {pycArcName} (compiled from {file})")
                     fileCount += 1
                     continue
-                zf.write(absPath, arcName)
-                log(f"  + {arcName}")
+                if not noInfo and os.path.normpath(absPath) == metaAbsPath:
+                    patchedMeta = buildMetaInfo(absPath, compileFlag, buildNum, compilePythonVer)
+                    zf.writestr(arcName, patchedMeta.encode("utf-8"))
+                    log(f"  + {arcName} (patched)")
+                else:
+                    zf.write(absPath, arcName)
+                    log(f"  + {arcName}")
                 fileCount += 1
 
     if verbose:

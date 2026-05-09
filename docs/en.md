@@ -16,6 +16,8 @@ Please use the releases page on GitHub: [shareui/ElyxBuilder/releases](https://g
 
 ## Commands
 
+> All commands must be run from the project root — the directory containing `refmap.yml`.
+
 ### `elyb --version`
 
 Prints the ElyxBuilder version.
@@ -78,10 +80,27 @@ elyb build -p aes-256 mypassword
 | `-c`, `--compile` | Compile `.py` → `.pyc` (Python 3.11) |
 | `-r`, `--reset` | Clear the compilation cache before building (requires `--compile`) |
 | `-p METHOD PASS` | Encrypt the archive |
+| `-ni`, `--no-info` | Skip appending the elyxbuilder info block to `meta.yml` |
 
 `--ast` and `--compile` are mutually exclusive.
 
 Output is written to `builds/`.
+
+#### Build info
+
+Before packaging, elyxbuilder appends a comment block to `meta.yml` inside the archive. The source file on disk is not modified.
+
+```yaml
+# elyxbuilder info
+compiled: true/false
+buildNum: 5
+buildDate: 2026-05-09
+pythonVer: 3.11
+sourceHash: a3f2...
+elybVer: 0.3.0
+```
+
+Use `-ni` / `--no-info` to skip this block entirely.
 
 #### Compilation (`--compile`)
 

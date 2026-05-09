@@ -23,6 +23,7 @@ def buildParser() -> argparse.ArgumentParser:
     buildParser.add_argument("-v", "--verbose", action="store_true", dest="verbose", help="print build log")
     buildParser.add_argument("-r", "--reset", action="store_true", dest="reset", help="clear compilation cache before build (requires --compile)")
     buildParser.add_argument("-p", "--password", nargs=2, metavar=("METHOD", "PASSWORD"), dest="encrypt", help="encrypt archive (e.g. -p aes-256 mypassword)")
+    buildParser.add_argument("-ni", "--no-info", action="store_true", dest="noInfo", help="skip appending elyxbuilder info block to meta.yml")
     buildModeGroup = buildParser.add_mutually_exclusive_group()
     buildModeGroup.add_argument("-a", "--ast", action="store_true", dest="checkAst", help="check .py files in source via AST before build")
     buildModeGroup.add_argument("-c", "--compile", action="store_true", dest="compile", help="compile .py files to .pyc and include in archive")
@@ -70,7 +71,7 @@ def main():
         return
     if args.command == "build":
         encryptMethod, encryptPassword = (args.encrypt[0], args.encrypt[1]) if args.encrypt else (None, None)
-        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword)
+        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword, args.noInfo)
         return
     if args.command == "cached":
         runCached()
