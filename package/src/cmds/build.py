@@ -102,7 +102,7 @@ def saveManifest(manifestPath: str, manifest: dict) -> None:
     with open(manifestPath, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer: str) -> str:
+def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer: str, staticVersion: str | None, staticClient: str | None = None) -> str:
     # reads meta.yml and appends elyxbuilder info block, returns patched content
     with open(metaPath, "r", encoding="utf-8") as f:
         original = f.read()
@@ -133,6 +133,10 @@ def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer
         f"sourceHash: {sourceHash} # Sha256",
         f"elybVer: {version}",
     ]
+    if staticVersion is not None:
+        lines.append(f"static_ver: \"{staticVersion}\"")
+    if staticClient is not None:
+        lines.append(f"client: \"{staticClient}\"")
     return original.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
 
 
@@ -225,7 +229,7 @@ def checkAst(sourceDir: str, verbose: bool, log) -> bool:
     return True
 
 
-def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None, noInfo: bool = False):
+def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileFlag: bool = False, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None, noInfo: bool = False, staticVersion: str | None = None, staticVersionInName: bool = False, staticClient: str | None = None, staticClientName: str | None = None):
     def log(msg: str) -> None:
         if verbose:
             print(f"{DIM}{msg}{RESET}")
@@ -342,7 +346,12 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         fail(str(e))
         return
 
-    archiveName = f"{buildName}.{zipFormat}"
+    suffix = ""
+    if staticVersionInName and staticVersion:
+        suffix += f"-{staticVersion}"
+    if staticClientName is not None:
+        suffix += f"-{staticClientName}"
+    archiveName = f"{buildName}{suffix}.{zipFormat}"
     log(f"resolved archive name: {archiveName}")
 
     buildsDir = os.path.join(cwd, "builds")
@@ -445,7 +454,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                     fileCount += 1
                     continue
                 if not noInfo and os.path.normpath(absPath) == metaAbsPath:
-                    patchedMeta = buildMetaInfo(absPath, compileFlag, buildNum, compilePythonVer)
+                    patchedMeta = buildMetaInfo(absPath, compileFlag, buildNum, compilePythonVer, staticVersion, staticClient)
                     zf.writestr(arcName, patchedMeta.encode("utf-8"))
                     log(f"  + {arcName} (patched)")
                 else:

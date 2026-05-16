@@ -69,6 +69,10 @@ elyb build --ast
 elyb build --compile
 elyb build --compile --reset
 elyb build -p aes-256 mypassword
+elyb build -sv 1.0.0
+elyb build -sv 1.0.0 true
+elyb build -sc com.example.client
+elyb build -sc com.example.client myclient
 ```
 
 | Flag | Description |
@@ -81,6 +85,8 @@ elyb build -p aes-256 mypassword
 | `-r`, `--reset` | Clear the compilation cache before building (requires `--compile`) |
 | `-p METHOD PASS` | Encrypt the archive |
 | `-ni`, `--no-info` | Skip appending the elyxbuilder info block to `meta.yml` |
+| `-sv VERSION [APPEND]` | Add `static_ver` to the build info block; optional `APPEND=true` appends `-{version}` to the archive name (default: `false`) |
+| `-sc PACKAGE [NAME]` | Add `client` to the build info block; optional `NAME` appends `-{name}` to the archive name |
 
 `--ast` and `--compile` are mutually exclusive.
 
@@ -98,7 +104,13 @@ buildDate: 2026-05-09
 pythonVer: 3.11
 sourceHash: a3f2...
 elybVer: 0.3.0
+static_ver: "1.0.0"
+client: "com.example.client"
 ```
+
+`static_ver` is only present when `-sv` / `--static-version` is passed. When the optional second argument is `true`, `-{version}` is appended to the archive name (e.g. `MyPlugin-1.0.0.eaf`).
+
+`client` is only present when `-sc` / `--static-client` is passed. When the optional second argument is provided, `-{name}` is appended to the archive name (e.g. `MyPlugin-myclient.eaf`).
 
 Use `-ni` / `--no-info` to skip this block entirely.
 

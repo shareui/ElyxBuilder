@@ -24,6 +24,8 @@ def buildParser() -> argparse.ArgumentParser:
     buildParser.add_argument("-r", "--reset", action="store_true", dest="reset", help="clear compilation cache before build (requires --compile)")
     buildParser.add_argument("-p", "--password", nargs=2, metavar=("METHOD", "PASSWORD"), dest="encrypt", help="encrypt archive (e.g. -p aes-256 mypassword)")
     buildParser.add_argument("-ni", "--no-info", action="store_true", dest="noInfo", help="skip appending elyxbuilder info block to meta.yml")
+    buildParser.add_argument("-sv", "--static-version", nargs="+", metavar=("VERSION", "APPEND"), dest="staticVersion", default=None, help="set static_ver in build info; optional APPEND=true appends version to archive name")
+    buildParser.add_argument("-sc", "--static-client", nargs="+", metavar=("PACKAGE", "NAME"), dest="staticClient", default=None, help="set client in build info; optional NAME appended to archive name")
     buildModeGroup = buildParser.add_mutually_exclusive_group()
     buildModeGroup.add_argument("-a", "--ast", action="store_true", dest="checkAst", help="check .py files in source via AST before build")
     buildModeGroup.add_argument("-c", "--compile", action="store_true", dest="compile", help="compile .py files to .pyc and include in archive")
@@ -71,7 +73,25 @@ def main():
         return
     if args.command == "build":
         encryptMethod, encryptPassword = (args.encrypt[0], args.encrypt[1]) if args.encrypt else (None, None)
-        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword, args.noInfo)
+        if args.staticVersion is not None:
+            if len(args.staticVersion) > 2:
+                print("error: --static-version accepts at most 2 arguments: VERSION and optional APPEND")
+                sys.exit(1)
+            staticVersion = args.staticVersion[0]
+            staticVersionInName = args.staticVersion[1].lower() == "true" if len(args.staticVersion) == 2 else False
+        else:
+            staticVersion = None
+            staticVersionInName = False
+        if args.staticClient is not None:
+            if len(args.staticClient) > 2:
+                print("error: --static-client accepts at most 2 arguments: PACKAGE and optional NAME")
+                sys.exit(1)
+            staticClientPackage = args.staticClient[0]
+            staticClientName = args.staticClient[1] if len(args.staticClient) == 2 else None
+        else:
+            staticClientPackage = None
+            staticClientName = None
+        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword, args.noInfo, staticVersion, staticVersionInName, staticClientPackage, staticClientName)
         return
     if args.command == "cached":
         runCached()
