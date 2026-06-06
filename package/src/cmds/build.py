@@ -531,9 +531,9 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
     buildNum = loadStats(statsPath)["builds"] + 1
     metaAbsPath = os.path.normpath(metaPath)
 
-    # strip @ELYBNoObf
+    # strip @ELYBNoObf — only when obfuscation is active
     cleanedSources: dict[str, bytes] = {}
-    if sourceRelPath:
+    if sourceRelPath and obfuscation is not None:
         sourceDir = os.path.join(cwd, sourceRelPath)
         rawIgnoreClean = config.get("compilationIgnore") or []
         ignoreAbsClean = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnoreClean}
