@@ -28,7 +28,8 @@ def buildParser() -> argparse.ArgumentParser:
     buildParser.add_argument("-sc", "--static-client", nargs="+", metavar=("PACKAGE", "NAME"), dest="staticClient", default=None, help="set client in build info; optional NAME appended to archive name")
     buildModeGroup = buildParser.add_mutually_exclusive_group()
     buildModeGroup.add_argument("-a", "--ast", action="store_true", dest="checkAst", help="check .py files in source via AST before build")
-    buildModeGroup.add_argument("-c", "--compile", action="store_true", dest="compile", help="compile .py files to .pyc and include in archive")
+    buildModeGroup.add_argument("-c", "--compile", nargs="?", type=int, choices=[0, 1, 2], const=1, default=None, dest="compile", metavar="LEVEL", help="compile .py files to .pyc (optimization level 0-2, default 1)")
+    buildParser.add_argument("-o", "--obfuscation", nargs="*", metavar="FILE", dest="obfuscation", default=None, help="obfuscate source before compilation; optional file paths relative to source")
     subparsers.add_parser("cached", help="show which source files have changed since last compilation")
     statsParser = subparsers.add_parser("stats", help="project statistics")
     statsSubparsers = statsParser.add_subparsers(dest="statsCommand")
@@ -91,7 +92,7 @@ def main():
         else:
             staticClientPackage = None
             staticClientName = None
-        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword, args.noInfo, staticVersion, staticVersionInName, staticClientPackage, staticClientName)
+        runBuild(args.noAssets, args.noFolder, args.verbose, args.checkAst, args.compile, args.reset, encryptMethod, encryptPassword, args.noInfo, staticVersion, staticVersionInName, staticClientPackage, staticClientName, args.obfuscation)
         return
     if args.command == "cached":
         runCached()

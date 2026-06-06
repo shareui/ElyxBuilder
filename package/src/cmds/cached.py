@@ -4,25 +4,33 @@ import sys
 import time
 import yaml
 
-
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
-
 def loadYaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
+def loadJson(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def findRefmap(cwd: str) -> tuple[str, dict] | None:
+    for name in ("refmap.yml", "refmap.yaml", "refmap.json"):
+        path = os.path.join(cwd, name)
+        if os.path.exists(path):
+            data = loadJson(path) if name.endswith(".json") else loadYaml(path)
+            return path, data
+    return None
 
 def loadManifest(manifestPath: str) -> dict:
     if not os.path.exists(manifestPath):
         return {}
     with open(manifestPath, "r", encoding="utf-8") as f:
         return json.load(f)
-
 
 def formatSize(byteCount: int) -> str:
     if byteCount < 1024:
@@ -33,29 +41,26 @@ def formatSize(byteCount: int) -> str:
 
 
 def formatAge(mtime: float) -> str:
-    # how long ago the .pyc was written
     delta = int(time.time() - mtime)
     if delta < 60:
         return f"{delta}s ago"
     if delta < 3600:
         return f"{delta // 60}m ago"
     if delta < 86400:
-        return f"{delta // 3600}h ago"
+        return f"{delta // 3600}h ago" # even my girlfriend is younger
     return f"{delta // 86400}d ago"
 
 
 def runCached() -> None:
     cwd = os.getcwd()
-    refmapPath = os.path.join(cwd, "refmap.yml")
-
-    if not os.path.exists(refmapPath):
-        print("error: refmap.yml not found in current directory", file=sys.stderr)
+    refmapResult = findRefmap(cwd)
+    if not refmapResult:
+        print("error: refmap not found in current directory", file=sys.stderr)
         sys.exit(1)
-
-    refmap = loadYaml(refmapPath)
+    refmapPath, refmap = refmapResult
     builderRelPath = refmap.get("elyxbuilder")
     if not builderRelPath:
-        print("error: refmap.yml missing key: elyxbuilder", file=sys.stderr)
+        print(f"error: {os.path.basename(refmapPath)} missing key: elyxbuilder", file=sys.stderr)
         sys.exit(1)
 
     builderDir = os.path.join(cwd, builderRelPath)
@@ -63,7 +68,6 @@ def runCached() -> None:
     if not os.path.exists(configPath):
         print(f"error: config.yml not found: {configPath}", file=sys.stderr)
         sys.exit(1)
-
     config = loadYaml(configPath)
     sourceRelPath = config.get("source")
     if not sourceRelPath:
@@ -79,10 +83,8 @@ def runCached() -> None:
         return
 
     manifest = loadManifest(manifestPath)
-
     rawIgnore = config.get("compilationIgnore") or []
     ignoreAbsPaths = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnore}
-
     cacheDirDisplay = os.path.join(".elyx", "cache", "python311").replace(os.sep, "/")
     print(f"Cache: {cacheDirDisplay}")
 
@@ -110,7 +112,6 @@ def runCached() -> None:
                 rows.append(("new", relPath, info))
                 counts["new"] += 1
                 continue
-
             if entry.get("mtime") != stat.st_mtime or entry.get("size") != stat.st_size:
                 pycRelPath = relPath[:-3] + ".pyc"
                 pycAbsPath = os.path.join(cacheDir, pycRelPath.replace("/", os.sep))
@@ -119,11 +120,10 @@ def runCached() -> None:
                 rows.append(("modified", relPath, info))
                 counts["modified"] += 1
                 continue
-
             rows.append(("ok", relPath, ""))
             counts["ok"] += 1
 
-    # column width for alignment
+    # column
     maxPathLen = max((len(r[1]) for r in rows), default=0)
 
     for status, relPath, info in rows:

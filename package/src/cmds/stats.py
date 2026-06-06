@@ -22,8 +22,6 @@ def isBinary(path: str) -> bool:
     return ext in BINARY_EXTENSIONS
 
 def countLinesInDir(dirPath: str, extFilter: str | None = None, excludeDir: str | None = None) -> dict[str, int]:
-    # returns {ext: lineCount}, extFilter=".py" limits to that ext only
-    # excludeDir: absolute path of a directory to skip entirely
     result: dict[str, int] = {}
     for root, dirs, files in os.walk(dirPath):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
@@ -57,11 +55,9 @@ def runStatLines(
         print(f"Lines count statistics for plugin {pluginName}:")
         print(f"{sourceRelPath}: {GREEN}{total}{RESET} (Python only)")
         return
-
-    # collect from pluginDir + refmap.yml + additionalDirs
     counts: dict[str, int] = countLinesInDir(pluginDir, excludeDir=builderDir)
 
-    # refmap.yml itself
+    # refmap.yml
     refmapExt = os.path.splitext(refmapPath)[1].lower() or "(no ext)"
     if not isBinary(refmapPath):
         counts[refmapExt] = counts.get(refmapExt, 0) + countLines(refmapPath)
@@ -74,7 +70,6 @@ def runStatLines(
         dirCounts = countLinesInDir(absDir, excludeDir=builderDir)
         for ext, n in dirCounts.items():
             counts[ext] = counts.get(ext, 0) + n
-
     total = sum(counts.values())
     print(f"Total lines count statistics for plugin {pluginName}:")
     for ext, n in sorted(counts.items()):
@@ -87,8 +82,6 @@ def formatSize(bytesCount: int) -> str:
     return f"{kb:.2f} KB ({mb:.1f} MB)"
 
 def sizeOfDir(dirPath: str, extFilter: str | None = None, excludeDir: str | None = None) -> dict[str, int]:
-    # returns {ext: bytes}, extFilter=".py" limits to that ext only
-    # excludeDir: absolute path of a directory to skip entirely
     result: dict[str, int] = {}
     for root, dirs, files in os.walk(dirPath):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
@@ -123,7 +116,6 @@ def runStatSize(
         print("Python only")
         return
 
-    # collect from pluginDir + refmap.yml + additionalDirs
     sizes: dict[str, int] = sizeOfDir(pluginDir, excludeDir=builderDir)
 
     refmapExt = os.path.splitext(refmapPath)[1].lower() or "(no ext)"

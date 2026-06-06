@@ -1,0 +1,837 @@
+import ast
+import os
+
+
+def collectLocalClassNames(sourceDir: str) -> frozenset[str]:
+    names: set[str] = set()
+    for root, dirs, files in os.walk(sourceDir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for file in files:
+            if not file.endswith(".py"):
+                continue
+            absPath = os.path.join(root, file)
+            try:
+                with open(absPath, "r", encoding="utf-8") as f:
+                    source = f.read()
+                tree = ast.parse(source, filename=absPath)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    names.add(node.name)
+    return frozenset(names)
+
+
+def _hasExternalBase(classNode: ast.ClassDef, localClassNames: frozenset[str]) -> bool:
+    for base in classNode.bases:
+        if isinstance(base, ast.Call):
+            return True
+        if isinstance(base, ast.Name) and base.id not in localClassNames:
+            return True
+        if isinstance(base, ast.Attribute):
+            return True
+    return False
+
+
+def collectProtectedNames(sourceDir: str) -> frozenset[str]:
+    names: set[str] = set()
+    importedFuncNames: set[str] = set()
+    trees: list[ast.Module] = []
+
+    for root, dirs, files in os.walk(sourceDir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for file in files:
+            if not file.endswith(".py"):
+                continue
+            absPath = os.path.join(root, file)
+            try:
+                with open(absPath, "r", encoding="utf-8") as f:
+                    source = f.read()
+                tree = ast.parse(source, filename=absPath)
+            except SyntaxError:
+                continue
+            trees.append(tree)
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        names.add(alias.asname or alias.name.split(".")[0])
+                elif isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        importedFuncNames.add(alias.name)
+                        names.add(alias.asname or alias.name)
+                elif isinstance(node, ast.Name):
+                    if node.id.startswith("__") and node.id.endswith("__"):
+                        names.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    if node.attr.startswith("__") and node.attr.endswith("__"):
+                        names.add(node.attr)
+
+    # are u are u, cuming on the tree bruh
+    for tree in trees:
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name not in importedFuncNames:
+                continue
+            args = node.args
+            for arg in args.args + args.posonlyargs + args.kwonlyargs:
+                names.add(arg.arg)
+            if args.vararg:
+                names.add(args.vararg.arg)
+            if args.kwarg:
+                names.add(args.kwarg.arg)
+
+    allKwUsed: set[str] = set()
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg is not None:
+                        allKwUsed.add(kw.arg)
+    if allKwUsed:
+        for tree in trees:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                args = node.args
+                for arg in args.args + args.posonlyargs + args.kwonlyargs:
+                    if arg.arg in allKwUsed:
+                        names.add(arg.arg)
+                if args.vararg and args.vararg.arg in allKwUsed:
+                    names.add(args.vararg.arg)
+                if args.kwarg and args.kwarg.arg in allKwUsed:
+                    names.add(args.kwarg.arg)
+    return frozenset(names)
+
+
+def _hasNoObfDecorator(node: ast.AST) -> bool:
+    decorators = getattr(node, "decorator_list", [])
+    for d in decorators:
+        if isinstance(d, ast.Name) and d.id == "ELYBNoObf":
+            return True
+    return getattr(node, "_elyb_no_obf", False)
+
+def _stripNoObfDecorator(node: ast.AST) -> None:
+    if hasattr(node, "decorator_list"):
+        node.decorator_list = [
+            d for d in node.decorator_list
+            if not (isinstance(d, ast.Name) and d.id == "ELYBNoObf")
+        ]
+
+# elybnoobf dec
+class MarkNoObfNodes(ast.NodeVisitor):
+    def _mark(self, node: ast.AST) -> None:
+        for d in getattr(node, "decorator_list", []):
+            if isinstance(d, ast.Name) and d.id == "ELYBNoObf":
+                node._elyb_no_obf = True
+                break
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._mark(node)
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._mark(node)
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._mark(node)
+
+
+class StripDocstrings(ast.NodeTransformer):
+    def _stripBody(self, node: ast.AST) -> ast.AST:
+        if _hasNoObfDecorator(node):
+            _stripNoObfDecorator(node)
+            return node
+        body = getattr(node, "body", None)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            node.body = body[1:] or [ast.Pass()]
+        return self.generic_visit(node)
+
+    def visit_Module(self, node: ast.Module) -> ast.Module:
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            node.body = body[1:] or [ast.Pass()]
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return self._stripBody(node)
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        return self._stripBody(node)
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        return self._stripBody(node)
+
+# tests
+def applyStripDocstrings(source: str) -> str:
+    tree = ast.parse(source)
+    tree = StripDocstrings().visit(tree)
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _scanCommentLines(source: str) -> dict[str, frozenset[int]]:
+    markers = ("# ELYBsaveLog", "# ELYBnoStrobf", "# ELYBnoIntObf")
+    result: dict[str, set[int]] = {m: set() for m in markers}
+    for i, line in enumerate(source.splitlines(), start=1):
+        for marker in markers:
+            if marker in line:
+                result[marker].add(i)
+    return {m: frozenset(v) for m, v in result.items()}
+
+
+class RemoveLogs(ast.NodeTransformer):
+    def __init__(self, saveLogLines: frozenset[int]) -> None:
+        self.saveLogLines = saveLogLines
+
+    def visit_Expr(self, node: ast.Expr) -> ast.AST:
+        if not isinstance(node.value, ast.Call):
+            return node
+        call = node.value
+        if getattr(node, "lineno", None) in self.saveLogLines:
+            return node
+        # log(...) direct call
+        if isinstance(call.func, ast.Name) and call.func.id == "log":
+            return ast.Pass()
+        # *.log(...) attribute call
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "log":
+            if isinstance(call.func.value, ast.Name) and call.func.value.id == "_au":
+                return ast.Pass()
+        return node
+
+
+def applyRemoveLogs(source: str) -> str:
+    commentLines = _scanCommentLines(source)
+    tree = ast.parse(source)
+    tree = RemoveLogs(commentLines["# ELYBsaveLog"]).visit(tree)
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _collectNestedLocals(funcNode: ast.AST) -> set[str]:
+    localNames: set[str] = set()
+    args = getattr(funcNode, "args", None)
+    if args:
+        for arg in args.args + args.posonlyargs + args.kwonlyargs:
+            localNames.add(arg.arg)
+        if args.vararg:
+            localNames.add(args.vararg.arg)
+        if args.kwarg:
+            localNames.add(args.kwarg.arg)
+    if isinstance(funcNode, ast.Lambda):
+        return localNames
+    stack = list(getattr(funcNode, "body", []))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            localNames.add(node.id)
+        if isinstance(node, ast.ExceptHandler) and node.name:
+            localNames.add(node.name)
+        for child in ast.iter_child_nodes(node):
+            stack.append(child)
+    return localNames
+
+
+def _renameClosure(funcNode: ast.AST, outerRenameMap: dict[str, str]) -> None:
+    if not outerRenameMap:
+        return
+    localNames = _collectNestedLocals(funcNode)
+
+    class ClosureRenamer(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id in outerRenameMap and node.id not in localNames:
+                node.id = outerRenameMap[node.id]
+            return node
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+            filtered = {k: v for k, v in outerRenameMap.items() if k not in localNames}
+            _renameClosure(node, filtered)
+            return node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+            filtered = {k: v for k, v in outerRenameMap.items() if k not in localNames}
+            _renameClosure(node, filtered)
+            return node
+
+        def visit_Lambda(self, node: ast.Lambda) -> ast.Lambda:
+            # creates its own scope
+            filtered = {k: v for k, v in outerRenameMap.items() if k not in localNames}
+            _renameClosure(node, filtered)
+            return node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+            node.decorator_list = [self.visit(d) for d in node.decorator_list]
+            # like dynamic_proxy(TextWatcherInterface)
+            node.bases = [self.visit(base) for base in node.bases]
+            # i dont remember what its comment says (
+            for stmt in node.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    _renameClosure(stmt, outerRenameMap)
+                elif isinstance(stmt, ast.ClassDef):
+                    ClosureRenamer().visit(stmt)
+            return node
+
+    if isinstance(funcNode, ast.ClassDef):
+        renamer = ClosureRenamer()
+        funcNode.decorator_list = [renamer.visit(d) for d in funcNode.decorator_list]
+        funcNode.bases = [renamer.visit(base) for base in funcNode.bases]
+
+    class OuterScopeRenamer(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id in outerRenameMap:
+                node.id = outerRenameMap[node.id]
+            return node
+    args = getattr(funcNode, "args", None)
+    if args:
+        defaultRenamer = OuterScopeRenamer()
+        args.defaults = [defaultRenamer.visit(d) for d in args.defaults]
+        args.kw_defaults = [defaultRenamer.visit(d) if d is not None else None for d in args.kw_defaults]
+    if isinstance(funcNode, ast.Lambda):
+        funcNode.body = ClosureRenamer().visit(funcNode.body)
+        return
+    for stmt in getattr(funcNode, "body", []):
+        ClosureRenamer().visit(stmt)
+
+
+import keyword as _keyword
+import random as _random
+import string as _string
+
+_OBFNAME_CHARS = _string.ascii_letters + _string.digits
+
+def _makeObfName(usedNames: set[str]) -> str:
+    # gen a random ident
+    while True:
+        length = _random.randint(4, 12)
+        name = _random.choice(_string.ascii_letters) + "".join(_random.choices(_OBFNAME_CHARS, k=length - 1))
+        if name not in usedNames and not _keyword.iskeyword(name):
+            usedNames.add(name)
+            return name
+
+
+class RenameLocals(ast.NodeTransformer):
+    def __init__(self, protectedNames: frozenset[str], localClassNames: frozenset[str] = frozenset()) -> None:
+        self.protectedNames = protectedNames
+        self.localClassNames = localClassNames
+        self._usedNames: set[str] = set()
+
+    def _renameFunction(self, node: ast.AST) -> ast.AST:
+        if _hasNoObfDecorator(node):
+            _stripNoObfDecorator(node)
+            return node
+
+        nonlocalNames: set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, (ast.Nonlocal, ast.Global)):
+                nonlocalNames.update(child.names)
+
+        renameMap: dict[str, str] = {}
+        usedNames = self._usedNames
+
+        def nextName() -> str:
+            return _makeObfName(usedNames)
+
+        def shouldRename(name: str) -> bool:
+            if name in ("self", "cls"):
+                return False
+            if name.startswith("__") and name.endswith("__"):
+                return False
+            if name in self.protectedNames:
+                return False
+            if name in nonlocalNames:
+                return False
+            return True
+
+        def getMapped(name: str) -> str:
+            if name not in renameMap:
+                renameMap[name] = nextName()
+            return renameMap[name]
+
+        args = node.args
+        for arg in args.args + args.posonlyargs + args.kwonlyargs:
+            if shouldRename(arg.arg):
+                arg.arg = getMapped(arg.arg)
+        if args.vararg and shouldRename(args.vararg.arg):
+            args.vararg.arg = getMapped(args.vararg.arg)
+        if args.kwarg and shouldRename(args.kwarg.arg):
+            args.kwarg.arg = getMapped(args.kwarg.arg)
+
+        nestedFunctions: list[ast.AST] = []
+
+        class BodyRenamer(ast.NodeTransformer):
+            def visit_Name(self, n: ast.Name) -> ast.Name:
+                if isinstance(n.ctx, (ast.Store, ast.Load, ast.Del)) and n.id in renameMap:
+                    n.id = renameMap[n.id]
+                    return n
+                if isinstance(n.ctx, ast.Store) and shouldRename(n.id):
+                    n.id = getMapped(n.id)
+                return n
+
+            def visit_ExceptHandler(self, n: ast.ExceptHandler) -> ast.ExceptHandler:
+                if n.name and shouldRename(n.name):
+                    mapped = getMapped(n.name)
+                    n.name = mapped
+                return self.generic_visit(n)
+
+            def _visitComprehension(self, n: ast.AST) -> ast.AST:
+                for gen in n.generators:  # type: ignore[attr-defined]
+                    for child in ast.walk(gen.target):
+                        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                            if shouldRename(child.id):
+                                getMapped(child.id)
+                return self.generic_visit(n)
+
+            def visit_ListComp(self, n: ast.ListComp) -> ast.ListComp:
+                return self._visitComprehension(n)
+            def visit_SetComp(self, n: ast.SetComp) -> ast.SetComp:
+                return self._visitComprehension(n)
+            def visit_GeneratorExp(self, n: ast.GeneratorExp) -> ast.GeneratorExp:
+                return self._visitComprehension(n)
+            def visit_DictComp(self, n: ast.DictComp) -> ast.DictComp:
+                return self._visitComprehension(n)
+
+            def visit_FunctionDef(self, n: ast.FunctionDef) -> ast.FunctionDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+
+            def visit_AsyncFunctionDef(self, n: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+
+            def visit_Lambda(self, n: ast.Lambda) -> ast.Lambda:
+                nestedFunctions.append(n)
+                return n
+
+            def visit_ClassDef(self, n: ast.ClassDef) -> ast.ClassDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+
+        node.body = [BodyRenamer().visit(stmt) for stmt in node.body]
+        for fn in nestedFunctions:
+            _renameClosure(fn, renameMap)
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return self._renameFunction(node)
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        return self._renameFunction(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        if _hasNoObfDecorator(node):
+            _stripNoObfDecorator(node)
+            return node
+        if _hasExternalBase(node, self.localClassNames):
+               # external base
+            return self._visitClassWithExternalBase(node)
+        return self.generic_visit(node)
+
+    def _visitClassWithExternalBase(self, node: ast.ClassDef) -> ast.ClassDef:
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._renameFunctionBodyOnly(stmt)
+            elif isinstance(stmt, ast.ClassDef):
+                self.visit_ClassDef(stmt)
+        return node
+
+    def _renameFunctionBodyOnly(self, node: ast.AST) -> ast.AST:
+        if _hasNoObfDecorator(node):
+            _stripNoObfDecorator(node)
+            return node
+
+        nonlocalNames: set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, (ast.Nonlocal, ast.Global)):
+                nonlocalNames.update(child.names)
+        renameMap: dict[str, str] = {}
+        usedNames = self._usedNames
+
+        def nextName() -> str:
+            return _makeObfName(usedNames)
+
+        def shouldRename(name: str) -> bool:
+            if name in ("self", "cls"):
+                return False
+            if name.startswith("__") and name.endswith("__"):
+                return False
+            if name in self.protectedNames:
+                return False
+            if name in nonlocalNames:
+                return False
+            return True
+
+        def getMapped(name: str) -> str:
+            if name not in renameMap:
+                renameMap[name] = nextName()
+            return renameMap[name]
+
+        # collect params
+        args = node.args
+        for arg in args.args + args.posonlyargs + args.kwonlyargs:
+            renameMap[arg.arg] = arg.arg
+        if args.vararg:
+            renameMap[args.vararg.arg] = args.vararg.arg
+        if args.kwarg:
+            renameMap[args.kwarg.arg] = args.kwarg.arg
+        nestedFunctions: list[ast.AST] = []
+
+        class BodyRenamer(ast.NodeTransformer):
+            def visit_Name(self, n: ast.Name) -> ast.Name:
+                if isinstance(n.ctx, (ast.Store, ast.Load, ast.Del)) and n.id in renameMap:
+                    n.id = renameMap[n.id]
+                    return n
+                if isinstance(n.ctx, ast.Store) and shouldRename(n.id):
+                    n.id = getMapped(n.id)
+                return n
+
+            def visit_ExceptHandler(self, n: ast.ExceptHandler) -> ast.ExceptHandler:
+                if n.name and shouldRename(n.name):
+                    mapped = getMapped(n.name)
+                    n.name = mapped
+                return self.generic_visit(n)
+
+            def _visitComprehension(self, n: ast.AST) -> ast.AST:
+                for gen in n.generators:  # type: ignore[attr-defined]
+                    for child in ast.walk(gen.target):
+                        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                            if shouldRename(child.id):
+                                getMapped(child.id)
+                return self.generic_visit(n)
+
+            def visit_ListComp(self, n: ast.ListComp) -> ast.ListComp:
+                return self._visitComprehension(n)
+            def visit_SetComp(self, n: ast.SetComp) -> ast.SetComp:
+                return self._visitComprehension(n)
+            def visit_GeneratorExp(self, n: ast.GeneratorExp) -> ast.GeneratorExp:
+                return self._visitComprehension(n)
+            def visit_DictComp(self, n: ast.DictComp) -> ast.DictComp:
+                return self._visitComprehension(n)
+
+            def visit_FunctionDef(self, n: ast.FunctionDef) -> ast.FunctionDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+
+            def visit_AsyncFunctionDef(self, n: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+
+            def visit_Lambda(self, n: ast.Lambda) -> ast.Lambda:
+                nestedFunctions.append(n)
+                return n
+
+            def visit_ClassDef(self, n: ast.ClassDef) -> ast.ClassDef:
+                if shouldRename(n.name):
+                    n.name = getMapped(n.name)
+                nestedFunctions.append(n)
+                return n
+        node.body = [BodyRenamer().visit(stmt) for stmt in node.body]
+        for fn in nestedFunctions:
+            _renameClosure(fn, renameMap)
+        return self.generic_visit(node)
+
+
+def applyRenameLocals(source: str, protectedNames: frozenset[str]) -> str:
+    tree = ast.parse(source)
+    tree = RenameLocals(protectedNames).visit(tree)
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
+def _makeXorStringExpr(value: str, key: int) -> ast.Call:
+    encoded = bytes(b ^ key for b in value.encode("utf-8"))
+    bytesNode = ast.Constant(value=encoded)
+    bVar = ast.Name(id="b", ctx=ast.Load())
+    keyNode = ast.Constant(value=key)
+    xorOp = ast.BinOp(left=bVar, op=ast.BitXor(), right=keyNode)
+    generator = ast.GeneratorExp(
+        elt=xorOp,
+        generators=[ast.comprehension(
+            target=ast.Name(id="b", ctx=ast.Store()),
+            iter=bytesNode,
+            ifs=[],
+            is_async=0,
+        )],
+    )
+    bytesCall = ast.Call(func=ast.Name(id="bytes", ctx=ast.Load()), args=[generator], keywords=[])
+    return ast.Call(
+        func=ast.Attribute(value=bytesCall, attr="decode", ctx=ast.Load()),
+        args=[],
+        keywords=[],
+    )
+
+
+def _isDocstringNode(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+class EncodeStrings(ast.NodeTransformer):
+
+    def __init__(self, skipLines: frozenset[int], protectedNames: frozenset[str], key: int, skipDocstrings: bool = False) -> None:
+        self.skipLines = skipLines
+        self.protectedNames = protectedNames
+        self.key = key
+        self.skipDocstrings = skipDocstrings
+
+    def _visitBody(self, node: ast.AST) -> ast.AST:
+        if _hasNoObfDecorator(node):
+            return node
+        if self.skipDocstrings:
+            body = getattr(node, "body", None)
+            if body and _isDocstringNode(body[0]):
+                rest = [self.visit(stmt) for stmt in body[1:]]
+                node.body = [body[0]] + rest
+                return node
+        return self.generic_visit(node)
+
+    def visit_Module(self, node: ast.Module) -> ast.Module:
+        if self.skipDocstrings and node.body and _isDocstringNode(node.body[0]):
+            rest = [self.visit(stmt) for stmt in node.body[1:]]
+            node.body = [node.body[0]] + rest
+            return node
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return self._visitBody(node)
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        return self._visitBody(node)
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        return self._visitBody(node)
+    def visit_Import(self, node: ast.Import) -> ast.Import:
+        return node
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> ast.ImportFrom:
+        return node
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        if not isinstance(node.value, str):
+            return node
+        value = node.value
+        if not value:
+            return node
+        if value in self.protectedNames:
+            return node
+        if value.startswith("__") and value.endswith("__"):
+            return node
+        if getattr(node, "lineno", None) in self.skipLines:
+            return node
+        return ast.copy_location(_makeXorStringExpr(value, self.key), node)
+
+def _makeXorIntExpr(value: int) -> ast.BinOp:
+    import random
+    mask = random.randint(1, 0xFFFF)
+    return ast.BinOp(
+        left=ast.Constant(value=value ^ mask),
+        op=ast.BitXor(),
+        right=ast.Constant(value=mask),
+    )
+
+
+class EncodeNumbers(ast.NodeTransformer):
+    def __init__(self, skipLines: frozenset[int]) -> None:
+        self.skipLines = skipLines
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        if _hasNoObfDecorator(node):
+            return node
+        return self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        if _hasNoObfDecorator(node):
+            return node
+        return self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        if _hasNoObfDecorator(node):
+            return node
+        return self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        if not isinstance(node.value, int) or isinstance(node.value, bool):
+            return node
+        value = node.value
+        if value in (0, 1, -1):
+            return node
+        if getattr(node, "lineno", None) in self.skipLines:
+            return node
+        return ast.copy_location(_makeXorIntExpr(value), node)
+
+def applyCleanupPipeline(source: str, removeLogs: bool) -> str:
+    commentLines = _scanCommentLines(source)
+    tree = ast.parse(source)
+    MarkNoObfNodes().visit(tree)
+
+    class StripNoObfDecorators(ast.NodeTransformer):
+        def _strip(self, node: ast.AST) -> ast.AST:
+            _stripNoObfDecorator(node)
+            return self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+            return self._strip(node)
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+            return self._strip(node)
+        def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+            return self._strip(node)
+
+    tree = StripNoObfDecorators().visit(tree)
+    if removeLogs:
+        tree = RemoveLogs(commentLines["# ELYBsaveLog"]).visit(tree)
+    ast.fix_missing_locations(tree)
+    result = ast.unparse(tree)
+    return result
+
+
+def _collectTopLevelSymbols(tree: ast.Module) -> list[dict]:
+    # collect top-level func & cls
+    symbols: list[dict] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = [arg.arg for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs]
+            if node.args.vararg:
+                params.append(node.args.vararg.arg)
+            if node.args.kwarg:
+                params.append(node.args.kwarg.arg)
+            symbols.append({"kind": "function", "name": node.name, "params": params})
+        elif isinstance(node, ast.ClassDef):
+            methods: list[dict] = []
+            for stmt in node.body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    mParams = [arg.arg for arg in stmt.args.args + stmt.args.posonlyargs + stmt.args.kwonlyargs]
+                    if stmt.args.vararg:
+                        mParams.append(stmt.args.vararg.arg)
+                    if stmt.args.kwarg:
+                        mParams.append(stmt.args.kwarg.arg)
+                    methods.append({"name": stmt.name, "params": mParams})
+            symbols.append({"kind": "class", "name": node.name, "methods": methods})
+    return symbols
+
+
+def collectFileMapping(originalSource: str, obfuscatedSource: str) -> dict:
+    originalTree = ast.parse(originalSource)
+    obfuscatedTree = ast.parse(obfuscatedSource)
+    originalSymbols = _collectTopLevelSymbols(originalTree)
+    obfuscatedSymbols = _collectTopLevelSymbols(obfuscatedTree)
+    functions: list[dict] = []
+    classes: list[dict] = []
+
+    for i, orig in enumerate(originalSymbols):
+        if i >= len(obfuscatedSymbols):
+            break
+        obf = obfuscatedSymbols[i]
+        if orig["kind"] != obf["kind"]:
+            continue
+        if orig["kind"] == "function":
+            renamed = orig["name"] != obf["name"]
+            paramMap: list[dict] = []
+            for j, p in enumerate(orig["params"]):
+                if j < len(obf["params"]):
+                    obfP = obf["params"][j]
+                    if p != obfP:
+                        paramMap.append({"original": p, "obfuscated": obfP})
+            entry: dict = {"original": orig["name"], "obfuscated": obf["name"], "renamed": renamed}
+            if paramMap:
+                entry["params"] = paramMap
+            functions.append(entry)
+        elif orig["kind"] == "class":
+            classRenamed = orig["name"] != obf["name"]
+            methodMappings: list[dict] = []
+            for j, origMethod in enumerate(orig["methods"]):
+                if j >= len(obf["methods"]):
+                    break
+                obfMethod = obf["methods"][j]
+                methodRenamed = origMethod["name"] != obfMethod["name"]
+                paramMap = []
+                for k, p in enumerate(origMethod["params"]):
+                    if k < len(obfMethod["params"]):
+                        obfP = obfMethod["params"][k]
+                        if p != obfP:
+                            paramMap.append({"original": p, "obfuscated": obfP})
+                mEntry: dict = {"original": origMethod["name"], "obfuscated": obfMethod["name"], "renamed": methodRenamed}
+                if paramMap:
+                    mEntry["params"] = paramMap
+                methodMappings.append(mEntry)
+            cEntry: dict = {"original": orig["name"], "obfuscated": obf["name"], "renamed": classRenamed, "methods": methodMappings}
+            classes.append(cEntry)
+
+    return {"functions": functions, "classes": classes}
+
+
+def applyObfuscationPipelineWithMapping(source: str, protectedNames: frozenset[str], xorKey: int, localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None) -> tuple[str, dict]:
+    obfuscated = applyObfuscationPipeline(source, protectedNames, xorKey, localClassNames, obfConfig)
+    mapping = collectFileMapping(source, obfuscated)
+    return obfuscated, mapping
+
+
+def applyZlibCompression(source: str) -> str:
+    import zlib as _zlib
+    import base64 as _base64
+    compressed = _zlib.compress(source.encode("utf-8"), level=9)
+    encoded = _base64.b64encode(compressed)[::-1]
+    line1 = "_ = lambda __ : __import__('zlib').decompress(__import__('base64').b64decode(__[::-1]))"
+    line2 = f"exec((_)(b'{encoded.decode('ascii')}'), globals(), locals())"
+    return line1 + "\n" + line2
+
+
+def applyObfuscationPipeline(source: str, protectedNames: frozenset[str], xorKey: int, localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None) -> str:
+    if obfConfig is None:
+        obfConfig = {}
+    doStripDocstrings: bool = obfConfig.get("stripDocstrings", True)
+    doRemoveLogs: bool = obfConfig.get("removeLogs", True)
+    doRenameLocals: bool = obfConfig.get("renameLocals", True)
+    doEncodeStrings: bool = obfConfig.get("encodeStrings", True)
+    doEncodeNumbers: bool = obfConfig.get("encodeNumbers", True)
+    doZlibCompression: bool = obfConfig.get("zlibCompression", False)
+
+    commentLines = _scanCommentLines(source)
+    tree = ast.parse(source)
+
+    fstringNames: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name):
+                    fstringNames.add(child.id)
+    allProtected = protectedNames | frozenset(fstringNames)
+    fstringMap: dict[str, str] = {}
+    placeholderCounter = [0]
+
+    class ExtractFStrings(ast.NodeTransformer):
+        def visit_JoinedStr(self, node: ast.JoinedStr) -> ast.Constant:
+            key = f"__ELYBF{placeholderCounter[0]}__"
+            placeholderCounter[0] += 1
+            original = ast.get_source_segment(source, node)
+            if original is not None:
+                original = original.strip().splitlines()[0].strip()
+            fstringMap[key] = original if original is not None else ast.unparse(node)
+            return ast.copy_location(ast.Constant(value=key), node)
+    tree = ExtractFStrings().visit(tree)
+    placeholderKeys = frozenset(fstringMap.keys())
+
+    MarkNoObfNodes().visit(tree)
+    if doStripDocstrings:
+        tree = StripDocstrings().visit(tree)
+    if doRemoveLogs:
+        tree = RemoveLogs(commentLines["# ELYBsaveLog"]).visit(tree)
+    if doRenameLocals:
+        tree = RenameLocals(allProtected, localClassNames).visit(tree)
+    if doEncodeStrings:
+        tree = EncodeStrings(commentLines["# ELYBnoStrobf"], allProtected | placeholderKeys, xorKey, skipDocstrings=not doStripDocstrings).visit(tree)
+    if doEncodeNumbers:
+        tree = EncodeNumbers(commentLines["# ELYBnoIntObf"]).visit(tree)
+    ast.fix_missing_locations(tree)
+    result = ast.unparse(tree)
+    for key, original in fstringMap.items():
+        result = result.replace(f"'{key}'", original)
+    if doZlibCompression:
+        result = applyZlibCompression(result)
+    return result
