@@ -666,6 +666,16 @@ class EncodeNumbers(ast.NodeTransformer):
             return node
         return ast.copy_location(_makeXorIntExpr(value), node)
 
+def stripNoObfDecorator(source: str) -> str:
+    # remove @ELYBNoObf lines without touching anything else
+    lines = source.splitlines(keepends=True)
+    result = []
+    for line in lines:
+        if line.lstrip().startswith("@ELYBNoObf"):
+            continue
+        result.append(line)
+    return "".join(result)
+
 def applyCleanupPipeline(source: str, removeLogs: bool) -> str:
     commentLines = _scanCommentLines(source)
     tree = ast.parse(source)

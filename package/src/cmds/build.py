@@ -537,7 +537,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         sourceDir = os.path.join(cwd, sourceRelPath)
         rawIgnoreClean = config.get("compilationIgnore") or []
         ignoreAbsClean = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnoreClean}
-        from elyb.cmds.obfuscate import applyCleanupPipeline
+        from elyb.cmds.obfuscate import stripNoObfDecorator
         for root, dirs, files in os.walk(sourceDir):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for file in files:
@@ -551,7 +551,9 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                     continue
                 with open(absPath, "r", encoding="utf-8") as f:
                     source = f.read()
-                cleaned = applyCleanupPipeline(source, obfConfig.get("removeLogs", True))
+                cleaned = stripNoObfDecorator(source)
+                if cleaned == source:
+                    continue
                 cleanedSources[arcName] = cleaned.encode("utf-8")
                 log(f"  cleanup: {os.path.relpath(absPath, sourceDir).replace(os.sep, '/')}")
 
