@@ -10,6 +10,7 @@ import zipfile
 import yaml
 
 from elyb.cmds.stats import incrementBuildStats, incrementFailedBuildStats, loadStats
+from elyb.cmds.components.progress import ProgressBar, countBuildWork
 
 def loadYaml(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -189,7 +190,7 @@ def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer
         lines.append(f"client: \"{staticClient}\"")
     return original.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
 
-def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log, obfuscateAll: bool = False, obfuscateFiles: frozenset[str] = frozenset(), protectedNames: frozenset[str] = frozenset(), localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None, optimizeLevel: int = 1) -> tuple[bool, dict]:
+def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log, bar: "ProgressBar | None" = None, obfuscateAll: bool = False, obfuscateFiles: frozenset[str] = frozenset(), protectedNames: frozenset[str] = frozenset(), localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None, optimizeLevel: int = 1) -> tuple[bool, dict]:
     if obfConfig is None:
         obfConfig = {}
     if optimizeLevel not in (0, 1, 2):
@@ -244,6 +245,8 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
                 if cacheHit:
                     log(f"  compile: cached {relPath}")
                     cached += 1
+                    if bar:
+                        bar.advance()
                     continue
             os.makedirs(os.path.dirname(pycAbsPath), exist_ok=True)
             
@@ -283,6 +286,8 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
             if not shouldObfuscate:
                 manifest[relPath] = {"mtime": stat.st_mtime, "size": stat.st_size, "optimizeLevel": optimizeLevel}
             compiled += 1
+            if bar:
+                bar.advance()
     saveManifest(manifestPath, manifest)
     log(f"compile: {compiled} compiled, {cached} from cache")
     return True, manifest
@@ -311,30 +316,21 @@ def checkAst(sourceDir: str, verbose: bool, log) -> bool:
     return True
 
 def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = False, checkAstFlag: bool = False, compileLevel: int | None = None, resetCache: bool = False, encryptMethod: str | None = None, encryptPassword: str | None = None, noInfo: bool = False, staticVersion: str | None = None, staticVersionInName: bool = False, staticClient: str | None = None, staticClientName: str | None = None, obfuscation: list[str] | None = None):
-    def log(msg: str) -> None:
-        if verbose:
-            print(f"{DIM}{msg}{RESET}")
-
     def fail(msg: str) -> None:
         print(f"{RED}error: {msg}{RESET}")
+
     if resetCache and compileLevel is None:
         fail("--reset requires --compile")
         return
+
     obfuscateAll = obfuscation is not None and len(obfuscation) == 0
     obfuscateFiles: frozenset[str] = frozenset(obfuscation) if obfuscation else frozenset()
 
-    if obfuscation is not None:
-        if obfuscateAll:
-            log("obfuscation: enabled for all source files")
-        else:
-            log(f"obfuscation: enabled for {len(obfuscateFiles)} file(s): {sorted(obfuscateFiles)}")
     pyzipperModule = None
-    aesStrength = None
     if encryptMethod is not None:
-        ok, pyzipperModule, aesStrength = resolveEncryption(encryptMethod, encryptPassword)
+        ok, pyzipperModule, _ = resolveEncryption(encryptMethod, encryptPassword)
         if not ok:
             return
-        log(f"encryption: {encryptMethod}")
 
     cwd = os.getcwd()
     refmapResult = findRefmap(cwd)
@@ -342,29 +338,27 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         fail("refmap.yml not found in current directory")
         return
     refmapPath, refmap = refmapResult
-    log(f"refmap loaded: {os.path.basename(refmapPath)}")
+
     builderRelPath = refmap.get("elyxbuilder")
     if not builderRelPath:
         fail(f"{os.path.basename(refmapPath)} missing key: elyxbuilder")
         return
     builderDir = os.path.join(cwd, builderRelPath)
-    log(f"builder dir: {builderDir}")
     if not os.path.isdir(builderDir):
         fail(f"builder directory not found: {builderDir}")
         return
 
-    # redefine fail BRO YOU FAILED
     def failTracked(msg: str) -> None:
         print(f"{RED}error: {msg}{RESET}")
         incrementFailedBuildStats(builderDir)
     fail = failTracked
+
     configPath = os.path.join(builderDir, "config.yml")
-    log(f"looking for config: {configPath}")
     if not os.path.exists(configPath):
         fail(f"config.yml not found in {builderDir}")
         return
     config = loadYaml(configPath)
-    log("config.yml loaded")
+
     elyxConfigPath = os.path.join(os.path.dirname(__file__), "..", "config.json")
     with open(elyxConfigPath, "r", encoding="utf-8") as f:
         elyxConfig = json.load(f)
@@ -375,13 +369,10 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         rawAssets = config.get("optionalAssets")
         if isinstance(rawAssets, list):
             excludedAssets = set(rawAssets)
-        log(f"--no-assets: excluding {len(excludedAssets)} asset(s): {sorted(excludedAssets) if excludedAssets else '(none listed)'}")
 
     obfConfig: dict = loadObfuscationConfig(config, configPath)
-    log(f"obfuscationConfig: {obfConfig}")
     rawIgnoreAll = config.get("ignoreAll")
     ignoreAll: list[str] = rawIgnoreAll if isinstance(rawIgnoreAll, list) else []
-    log(f"ignoreAll: {len(ignoreAll)} pattern(s)")
     zipFormat = config.get("zipFormat")
 
     if not zipFormat:
@@ -399,20 +390,16 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
             return
     else:
         buildNameTemplate = buildNameUncompiled
-    log(f"zip format: {zipFormat}, build name template: {buildNameTemplate}")
-    metaRelPath = refmap.get("metainfo")
 
+    metaRelPath = refmap.get("metainfo")
     if not metaRelPath:
         fail(f"{os.path.basename(refmapPath)} missing key: metainfo")
         return
     metaPath = os.path.join(cwd, metaRelPath)
-    log(f"looking for metainfo: {metaPath}")
-
     if not os.path.exists(metaPath):
         fail(f"metainfo not found: {metaPath}")
         return
     meta = loadMetainfo(metaPath)
-    log("metainfo loaded")
 
     try:
         buildName = resolveBuildName(buildNameTemplate, meta)
@@ -426,36 +413,54 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
     if staticClientName is not None:
         suffix += f"-{staticClientName}"
     archiveName = f"{buildName}{suffix}.{zipFormat}"
-    log(f"resolved archive name: {archiveName}")
 
     buildsDir = os.path.join(cwd, "builds")
     os.makedirs(buildsDir, exist_ok=True)
-
     archivePath = os.path.join(buildsDir, archiveName)
-    log(f"output path: {archivePath}")
 
     pluginDir = os.path.dirname(builderDir)
-
-    # arc base
     arcBase = os.path.dirname(os.path.normpath(pluginDir))
-
-    log(f"plugin dir: {pluginDir}")
-    log(f"arc base: {arcBase}")
     sourceRelPath = config.get("source")
+
+    # pre-scan ignore paths for work estimation
+    rawIgnorePre = config.get("compilationIgnore") or []
+    ignoreAbsPathsPre: set[str] = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnorePre}
+    sourceDirPre = os.path.join(cwd, sourceRelPath) if sourceRelPath else None
+    total = countBuildWork(sourceDirPre, pluginDir, ignoreAbsPathsPre, compileLevel, obfuscation, checkAstFlag)
+
+    bar = ProgressBar(total)
+    bar.start()
+
+    def log(msg: str) -> None:
+        if verbose:
+            bar.log(msg)
+
+    def status(msg: str) -> None:
+        if not verbose:
+            bar.log(msg)
+
+    # setup done
+    bar.advance()
+    status("Loading config")
 
     if checkAstFlag:
         if not sourceRelPath:
+            bar.stop()
             fail("config.yml missing key: source (required for --ast)")
             return
         sourceDir = os.path.join(cwd, sourceRelPath)
         log(f"ast: scanning {sourceDir}")
+        status("AST check")
         if not checkAst(sourceDir, verbose, log):
+            bar.stop()
             incrementFailedBuildStats(builderDir)
             return
-        
+        bar.advance()
+
     obfuscatedSources: dict[str, bytes] = {}
     if obfuscation is not None and compileLevel is None:
         if not sourceRelPath:
+            bar.stop()
             fail("config.yml missing key: source (required for --obfuscation)")
             return
         sourceDir = os.path.join(cwd, sourceRelPath)
@@ -467,9 +472,9 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
         protectedNames = collectProtectedNames(sourceDir)
         localClassNames = collectLocalClassNames(sourceDir)
         log(f"obfuscation: collected {len(protectedNames)} protected name(s)")
-        # relPath
         obfuscationMapping: dict[str, dict] = {}
 
+        status("Obfuscating source")
         for root, dirs, files in os.walk(sourceDir):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for file in files:
@@ -491,6 +496,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                 obfuscatedSources[arcKey] = obfuscated.encode("utf-8")
                 obfuscationMapping[relPathUnix] = fileMapping
                 log(f"  obfuscated: {relPathUnix}")
+                bar.advance()
 
         if obfConfig.get("saveMapping", True):
             mappingPath = os.path.join(buildsDir, "latest_mapping.json")
@@ -500,6 +506,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
 
     if compileLevel is not None:
         if not sourceRelPath:
+            bar.stop()
             fail("config.yml missing key: source (required for --compile)")
             return
         sourceDir = os.path.join(cwd, sourceRelPath)
@@ -522,8 +529,10 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
             localClassNames = collectLocalClassNames(sourceDir)
             log(f"obfuscation: collected {len(protectedNames)} protected name(s)")
 
-        ok, _ = compileSourceFiles(sourceDir, cacheDir, ignoreAbsPaths, log, obfuscateAll, obfuscateFiles, protectedNames, localClassNames, obfConfig, compileLevel)
+        status("Compiling to bytecode")
+        ok, _ = compileSourceFiles(sourceDir, cacheDir, ignoreAbsPaths, log, bar, obfuscateAll, obfuscateFiles, protectedNames, localClassNames, obfConfig, compileLevel)
         if not ok:
+            bar.stop()
             incrementFailedBuildStats(builderDir)
             return
 
@@ -557,15 +566,17 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                 cleanedSources[arcName] = cleaned.encode("utf-8")
                 log(f"  cleanup: {os.path.relpath(absPath, sourceDir).replace(os.sep, '/')}")
 
+    status("Packing archive")
+    bar.advance()
     fileCount = 0
     skippedCount = 0
 
     with openArchive(archivePath, encryptMethod, encryptPassword, pyzipperModule) as zf:
-        # ref path rel to cwd
         refmapArcName = os.path.relpath(refmapPath, cwd).replace(os.sep, "/")
         zf.write(refmapPath, refmapArcName)
         log(f"  + {refmapArcName}")
         fileCount += 1
+        bar.advance()
 
         for root, dirs, files in os.walk(pluginDir):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
@@ -597,12 +608,14 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                         zf.write(absPath, arcName)
                         log(f"  + {arcName} (not compiled)")
                         fileCount += 1
+                        bar.advance()
                         continue
                     pycPath = pycCachePath(sourceDir, cacheDir, absPath)
                     pycArcName = relDir + "/" + file[:-3] + ".pyc"
                     zf.write(pycPath, pycArcName)
                     log(f"  + {pycArcName} (compiled from {file})")
                     fileCount += 1
+                    bar.advance()
                     continue
                 if not noInfo and os.path.normpath(absPath) == metaAbsPath:
                     patchedMeta = buildMetaInfo(absPath, compileLevel is not None, buildNum, compilePythonVer, staticVersion, staticClient)
@@ -618,10 +631,12 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
                     zf.write(absPath, arcName)
                     log(f"  + {arcName}")
                 fileCount += 1
+                bar.advance()
 
     if verbose:
         log(f"packed {fileCount} file(s), skipped {skippedCount} file(s)")
 
+    bar.stop()
     incrementBuildStats(builderDir, compileLevel is not None)
     relArchivePath = os.path.join("builds", archiveName)
     print(f"{GREEN}Successful build at {relArchivePath}!{RESET}")
