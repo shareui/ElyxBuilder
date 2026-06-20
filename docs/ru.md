@@ -4,7 +4,9 @@ CLI-инструмент для сборки Elyx-плагинов.
 
 ## Установка
 
-Воспользуйтесь страницей релизов на GitHub: [shareui/ElyxBuilder/releases](https://github.com/shareui/ElyxBuilder/releases)
+```
+pip install ElyxBuilder
+```
 
 ## Требования
 

@@ -4,7 +4,9 @@ CLI tool for building Elyx plugins.
 
 ## Installation
 
-Please use the releases page on GitHub: [shareui/ElyxBuilder/releases](https://github.com/shareui/ElyxBuilder/releases)
+```
+pip install ElyxBuilder
+```
 
 ## Requirements
 
