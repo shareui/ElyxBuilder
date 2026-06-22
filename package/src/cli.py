@@ -1,4 +1,5 @@
 import argparse
+import shlex
 import sys
 
 from elyb.cmds.version import runVersion
@@ -7,6 +8,7 @@ from elyb.cmds.build import runBuild
 from elyb.cmds.cached import runCached
 from elyb.cmds.ignore import runAddIgnore, runDelIgnore
 from elyb.cmds.stats import runStatBuilds, runStatLines, runStatSize, runStatFiles
+from elyb.cmds.watch import runWatch
 
 def buildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="elyb")
@@ -31,6 +33,9 @@ def buildParser() -> argparse.ArgumentParser:
     buildModeGroup.add_argument("-c", "--compile", nargs="?", type=int, choices=[0, 1, 2], const=1, default=None, dest="compile", metavar="LEVEL", help="compile .py files to .pyc (optimization level 0-2, default 1)")
     buildParser.add_argument("-o", "--obfuscation", nargs="*", metavar="FILE", dest="obfuscation", default=None, help="obfuscate source before compilation; optional file paths relative to source")
     subparsers.add_parser("cached", help="show which source files have changed since last compilation")
+    watchParser = subparsers.add_parser("watch", help="poll for changes and rebuild automatically")
+    watchParser.add_argument("interval", type=int, metavar="TIME", help="polling interval in seconds")
+    watchParser.add_argument("-a", "--args", dest="buildArgs", default="", metavar="ARGS", help="arguments to pass to elyb build")
     statsParser = subparsers.add_parser("stats", help="project statistics")
     statsSubparsers = statsParser.add_subparsers(dest="statsCommand")
     statsSubparsers.add_parser("builds", help="show build counts")
@@ -96,6 +101,10 @@ def main():
         return
     if args.command == "cached":
         runCached()
+        return
+    if args.command == "watch":
+        buildArgs = shlex.split(args.buildArgs) if args.buildArgs.strip() else []
+        runWatch(args.interval, buildArgs)
         return
     if args.command == "stats":
         if args.statsCommand in ("builds", "lines", "size", "files"):
