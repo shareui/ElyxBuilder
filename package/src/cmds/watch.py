@@ -16,9 +16,11 @@ RESET = "\033[0m"
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 
+
 def termSize() -> tuple[int, int]:
     s = shutil.get_terminal_size()
     return s.columns, s.lines
+
 
 def scanPluginFiles(cwd: str) -> dict[str, float]:
     result: dict[str, float] = {}
@@ -41,6 +43,7 @@ def hasChanged(prev: dict[str, float], curr: dict[str, float]) -> bool:
             return True
     return False
 
+
 class WatchUI:
     def __init__(self, intervalSeconds: int):
         self._logs: list[str] = []
@@ -49,7 +52,7 @@ class WatchUI:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._paused = False
         self._interval = intervalSeconds
-        self._timerReset = time.time()  # when the current countdown started
+        self._timerReset = time.time()
 
     def start(self):
         sys.stdout.write(HIDE_CURSOR + "\033[2J")
@@ -88,16 +91,16 @@ class WatchUI:
 
         timerLabel = f"  Next check: {remaining:.0f}s"
 
-        # 4 fixed rows: timer, top sep, bottom sep, footer
         logAreaRows = rows - 4
         buf: list[str] = []
+
         buf.append(f"\033[1;1H\033[2K{DIM}{timerLabel}{RESET}")
         buf.append(f"\033[2;1H\033[2K{sep}")
 
         visible = logs[-logAreaRows:] if len(logs) > logAreaRows else logs
         for i, entry in enumerate(visible):
             row = 3 + i
-            buf.append(f"\033[{row};1H\033[2K{entry}")
+            buf.append(f"\033[{row};1H\033[2K{entry}{RESET}")
 
         for i in range(len(visible), logAreaRows):
             row = 3 + i
@@ -105,6 +108,7 @@ class WatchUI:
 
         buf.append(f"\033[{rows - 1};1H\033[2K{sep}")
         buf.append(f"\033[{rows};1H\033[2K{footer}")
+
         return "".join(buf)
 
     def _loop(self):
@@ -132,7 +136,9 @@ def _dispatchBuild(args: list[str]) -> None:
     modeGroup.add_argument("-a", "--ast", action="store_true", dest="checkAst")
     modeGroup.add_argument("-c", "--compile", nargs="?", type=int, choices=[0, 1, 2], const=1, default=None, dest="compile", metavar="LEVEL")
     parser.add_argument("-o", "--obfuscation", nargs="*", metavar="FILE", dest="obfuscation", default=None)
+
     parsed = parser.parse_args(args)
+
     encryptMethod, encryptPassword = (parsed.encrypt[0], parsed.encrypt[1]) if parsed.encrypt else (None, None)
 
     if parsed.staticVersion is not None:
@@ -186,6 +192,7 @@ def runWatch(intervalSeconds: int, buildArgs: list[str]) -> None:
     cwd = os.getcwd()
     ui = WatchUI(intervalSeconds)
     ui.start()
+
     ui.addLog("• Polling started")
 
     def pollLoop():
@@ -199,6 +206,7 @@ def runWatch(intervalSeconds: int, buildArgs: list[str]) -> None:
 
             if ui.isPaused():
                 continue
+
             ui.resetTimer()
             ui.addLog("• Checking")
             currSnapshot = scanPluginFiles(cwd)
@@ -208,22 +216,31 @@ def runWatch(intervalSeconds: int, buildArgs: list[str]) -> None:
                 prevSnapshot = currSnapshot
                 ui.resetTimer()
                 continue
+
             ui.addLog("• Changes found")
             ui.addLog("• Starting the built")
+
             buf = io.StringIO()
-            success = False
+            exitedClean = False
             try:
                 with redirect_stdout(buf), redirect_stderr(buf):
                     _dispatchBuild(buildArgs)
-                success = True
+                exitedClean = True
             except SystemExit as e:
-                success = (e.code == 0 or e.code is None)
+                exitedClean = (e.code == 0 or e.code is None)
             except Exception as e:
                 ui.addLog(f"{RED}• Built failed: {e}{RESET}")
                 prevSnapshot = scanPluginFiles(cwd)
                 ui.resetTimer()
                 continue
+
             output = buf.getvalue()
+            failPatterns = ("error:", "compilation failed:", "failed to complete build:")
+            outputHasError = any(
+                any(p in line.replace(GREEN, "").replace(RED, "").replace(DIM, "").replace(RESET, "").lower() for p in failPatterns)
+                for line in output.splitlines()
+            )
+            success = exitedClean and not outputHasError
 
             if success:
                 builtRelPath = _extractBuiltPath(output)
@@ -245,7 +262,6 @@ def runWatch(intervalSeconds: int, buildArgs: list[str]) -> None:
                 ui.addLog(f"{RED}• Built failed: {errorLine}{RESET}")
 
             prevSnapshot = scanPluginFiles(cwd)
-            # timer starts
             ui.resetTimer()
 
     pollThread = threading.Thread(target=pollLoop, daemon=True)
