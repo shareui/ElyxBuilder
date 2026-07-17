@@ -195,6 +195,19 @@ def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer
         lines.append(f"client: \"{staticClient}\"")
     return original.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
 
+def _runCompile(pythonBin: str, src: str, cfile: str, dfile: str, optimizeLevel: int) -> tuple[int, str]:
+    result = subprocess.run(
+        [pythonBin, "-c",
+         f"import py_compile; py_compile.compile({src!r}, cfile={cfile!r}, dfile={dfile!r}, doraise=True, optimize={optimizeLevel})"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stderr
+
+
+MAX_COMPILE_WORKERS = 8
+
+
 def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log, bar: "ProgressBar | None" = None, obfuscateAll: bool = False, obfuscateFiles: frozenset[str] = frozenset(), protectedNames: frozenset[str] = frozenset(), localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None, optimizeLevel: int = 1, compilePythonVer: str = "3.11") -> tuple[bool, dict]:
     if obfConfig is None:
         obfConfig = {}
@@ -202,7 +215,9 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
         print(f"{RED}error: invalid optimize level {optimizeLevel!r}. Must be 0, 1, or 2.{RESET}")
         return False, {}
     import random
+    import concurrent.futures
     from elyb.cmds.obfuscate import applyObfuscationPipeline
+
     pythonBin = findPython(compilePythonVer)
     if pythonBin is None:
         print(
@@ -213,9 +228,11 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
 
     manifestPath = os.path.join(cacheDir, "manifest.json")
     manifest = loadManifest(manifestPath)
-    compiled = 0
-    cached = 0
+    seenRelPaths: set[str] = set()
+    jobs: list[dict] = []
+    cachedCount = 0
 
+    # Plan phase: walk source once, classify each .py as cache-hit or compile-job.
     for root, dirs, files in os.walk(sourceDir):
         dirs[:] = [d for d in dirs if d != "__pycache__"]
         for file in files:
@@ -227,15 +244,12 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
                 log(f"  compile: skip {os.path.relpath(absPath, sourceDir)}")
                 continue
             relPath = os.path.relpath(absPath, sourceDir).replace(os.sep, "/")
+            seenRelPaths.add(relPath)
             # files in compilationIgnore are never obfuscated (In the glow of starry sky, seven nights I would lie Now I know I wanna stay, I will never go away In the moonlight)
-            shouldObfuscate = (
-                normalizedAbs not in ignoreAbsPaths
-                and (obfuscateAll or relPath in obfuscateFiles)
-            )
+            shouldObfuscate = obfuscateAll or relPath in obfuscateFiles
 
             stat = os.stat(absPath)
             entry = manifest.get(relPath)
-
             pycRelPath = relPath[:-3] + ".pyc"
             pycAbsPath = os.path.join(cacheDir, pycRelPath.replace("/", os.sep))
 
@@ -248,53 +262,106 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
                     and os.path.exists(pycAbsPath)
                 )
                 if cacheHit:
-                    log(f"  compile: cached {relPath}")
-                    cached += 1
+                    cachedCount += 1
                     if bar:
                         bar.advance()
+                    log(f"  compile: cached {relPath}")
                     continue
-            os.makedirs(os.path.dirname(pycAbsPath), exist_ok=True)
-            
-            if shouldObfuscate:
-                with open(absPath, "r", encoding="utf-8") as f:
-                    source = f.read()
-                xorKey = random.randint(1, 254)
-                source = applyObfuscationPipeline(source, protectedNames, xorKey, localClassNames, obfConfig)
 
-                tmpPath = absPath + ".obf.tmp"
+            jobs.append({
+                "abs": absPath,
+                "pyc": pycAbsPath,
+                "rel": relPath,
+                "obf": shouldObfuscate,
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "tmp": absPath + ".obf.tmp" if shouldObfuscate else None,
+            })
+
+    # Phase 1: prepare obfuscated sources in this process (serial — uses
+    # elyb's runtime and a per-file random key). Track any failures so we
+    # can skip the corresponding compile jobs.
+    obfPrepared: set[str] = set()
+    obfPrepErrors: list[tuple[str, str]] = []
+    for job in jobs:
+        if not job["obf"]:
+            continue
+        try:
+            with open(job["abs"], "r", encoding="utf-8") as f:
+                source = f.read()
+            xorKey = random.randint(1, 254)
+            source = applyObfuscationPipeline(source, protectedNames, xorKey, localClassNames, obfConfig)
+            with open(job["tmp"], "w", encoding="utf-8") as f:
+                f.write(source)
+            obfPrepared.add(job["rel"])
+        except Exception as e:
+            obfPrepErrors.append((job["rel"], str(e)))
+
+    # Phase 2: compile all non-failed jobs in parallel. Each job spawns its
+    # own python interpreter via subprocess, so the GIL of the parent is
+    # irrelevant and we cap at min(cpu, 8, len(jobs)).
+    compileJobs = [j for j in jobs if not (j["obf"] and j["rel"] not in obfPrepared)]
+    errors: list[tuple[str, str]] = list(obfPrepErrors)
+    successes: list[dict] = []
+
+    def runOne(job: dict) -> tuple[dict, int, str]:
+        src = job["tmp"] if job["obf"] else job["abs"]
+        rc, stderr = _runCompile(pythonBin, src, job["pyc"], job["rel"], optimizeLevel)
+        return job, rc, stderr
+
+    workerCount = max(1, min(MAX_COMPILE_WORKERS, os.cpu_count() or 4, len(compileJobs))) if compileJobs else 1
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workerCount) as ex:
+            for job, rc, stderr in ex.map(runOne, compileJobs):
+                if bar:
+                    bar.advance()
+                if rc != 0:
+                    errors.append((job["rel"], stderr.strip()))
+                    log(f"  compile: failed {job['rel']}")
+                else:
+                    successes.append(job)
+                    log(f"  compile: {job['rel']}{' (obfuscated)' if job['obf'] else ''}")
+    finally:
+        # always tidy obfuscated temp files, even on abort
+        for job in jobs:
+            tmp = job.get("tmp")
+            if tmp and os.path.exists(tmp):
                 try:
-                    with open(tmpPath, "w", encoding="utf-8") as f:
-                        f.write(source)
-                    result = subprocess.run(
-                        [pythonBin, "-c",
-                         f"import py_compile; py_compile.compile({tmpPath!r}, cfile={pycAbsPath!r}, dfile={relPath!r}, doraise=True, optimize={optimizeLevel})"],
-                        capture_output=True,
-                        text=True,
-                    )
-                finally:
-                    if os.path.exists(tmpPath):
-                        os.remove(tmpPath)
-                log(f"  compile: {relPath} (obfuscated)")
-            else:
-                result = subprocess.run(
-                    [pythonBin, "-c",
-                     f"import py_compile; py_compile.compile({absPath!r}, cfile={pycAbsPath!r}, dfile={relPath!r}, doraise=True, optimize={optimizeLevel})"],
-                    capture_output=True,
-                    text=True,
-                )
-                log(f"  compile: {relPath}")
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
-            if result.returncode != 0:
-                print(f"{RED}Compilation failed:{RESET}")
-                print(f"{RED}{result.stderr.strip()}{RESET}")
-                return False, manifest
-            if not shouldObfuscate:
-                manifest[relPath] = {"mtime": stat.st_mtime, "size": stat.st_size, "optimizeLevel": optimizeLevel}
-            compiled += 1
-            if bar:
-                bar.advance()
+    # Manifest: only persist non-obfuscated successes (obfuscated .pyc
+    # embeds a per-build random key, so caching them is unsafe).
+    for job in successes:
+        if not job["obf"]:
+            manifest[job["rel"]] = {
+                "mtime": job["mtime"],
+                "size": job["size"],
+                "optimizeLevel": optimizeLevel,
+            }
+
+    # Purge stale manifest entries (and orphaned .pyc) for .py files that
+    # were removed from source since the last build.
+    for relPath in list(manifest.keys()):
+        if relPath not in seenRelPaths:
+            manifest.pop(relPath, None)
+            pycAbsPath = os.path.join(cacheDir, (relPath[:-3] + ".pyc").replace("/", os.sep))
+            if os.path.exists(pycAbsPath):
+                try:
+                    os.remove(pycAbsPath)
+                except OSError:
+                    pass
+
     saveManifest(manifestPath, manifest)
-    log(f"compile: {compiled} compiled, {cached} from cache")
+    log(f"compile: {len(successes)} compiled, {cachedCount} from cache, {len(errors)} failed")
+    if errors:
+        print(f"{RED}Compilation failed ({len(errors)} file(s)):{RESET}")
+        for relPath, stderr in errors:
+            print(f"{RED}--- {relPath} ---{RESET}")
+            print(f"{RED}{stderr}{RESET}")
+        return False, manifest
     return True, manifest
 
 def pycCachePath(sourceDir: str, cacheDir: str, pyAbsPath: str) -> str:
@@ -367,7 +434,10 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
     elyxConfigPath = os.path.join(os.path.dirname(__file__), "..", "config.json")
     with open(elyxConfigPath, "r", encoding="utf-8") as f:
         elyxConfig = json.load(f)
-    compilePythonVer = elyxConfig.get("compilePythonVer", "3.11")
+    compilePythonVer = str(elyxConfig.get("compilePythonVer", "3.11"))
+    if not re.match(r"^\d+\.\d+$", compilePythonVer):
+        fail(f"config.json: invalid compilePythonVer {compilePythonVer!r} (expected MAJOR.MINOR, e.g. '3.14')")
+        return
 
     excludedAssets: set[str] = set()
     if noAssets:
