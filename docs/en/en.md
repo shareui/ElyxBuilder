@@ -11,7 +11,7 @@ pip install ElyxBuilder
 ## Requirements
 
 - Python >= 3.10
-- Python 3.11 — required only for `.pyc` compilation
+- Python 3.11 / 3.12 / 3.13 / 3.14 — required only for `.pyc` compilation (configured via `compilePythonVer` in `elyxbuilder/config.json`)
 - pyzipper — required only for archive encryption
 
 ---
@@ -86,7 +86,7 @@ elyb build -sc com.example.client myclient
 | `-nf`, `--no-folder` | Exclude the `elyxbuilder` directory from the archive |
 | `-v`, `--verbose` | Print a detailed build log |
 | `-a`, `--ast` | Check `.py` syntax via AST before building |
-| `-c [LEVEL]`, `--compile [LEVEL]` | Compile `.py` → `.pyc` (Python 3.11); LEVEL is 0–2 (default: 1) |
+| `-c [LEVEL]`, `--compile [LEVEL]` | Compile `.py` → `.pyc` (default: `compilePythonVer` from `config.json`, e.g. 3.11/3.12/3.13/3.14); LEVEL is 0–2 (default: 1) |
 | `-r`, `--reset` | Clear the compilation cache before building (requires `--compile`) |
 | `-o [FILE...]`, `--obfuscation [FILE...]` | Obfuscate source before packaging; omit files to obfuscate everything |
 | `-p METHOD PASS` | Encrypt the archive |

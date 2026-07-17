@@ -582,7 +582,7 @@ def runInteractive():
     animateCreating(normalized, pluginname, refmapFmt, metainfoFmt)
     writePlugin(pluginname, normalized, author, pluginId, version,
                 appVersion, sdkVersion, elyxVersion, iconRaw,
-                refmapFmt, metainfoFmt)
+                refmapFmt, metainfoFmt, cfg["compilePythonVer"])
     sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
@@ -597,7 +597,9 @@ def runNew(pluginname: str, author: str):
     writePlugin(
         pluginname, normalized, author, pluginId,
         "0.1.0", cfg["appVersion"], cfg["sdkVersion"], cfg["elyxVersion"],
-        ""
+        "",
+        "yaml", "yaml",
+        cfg["compilePythonVer"],
     )
 
 
@@ -613,6 +615,7 @@ def writePlugin(
     icon: str,
     refmapFmt: str = "yaml",
     metainfoFmt: str = "yaml",
+    compilePythonVer: str = "3.11",
 ):
     base = normalized
 
@@ -621,7 +624,7 @@ def writePlugin(
         f'zipFormat: eaf\n'
         f'source: {normalized}/src\n'
         f'buildNameUncompiled: "{{name}}-{{version}}"\n'
-        f'buildNameCompiled: "{{name}}-{{version}}-3.11"\n'
+        f'buildNameCompiled: "{{name}}-{{version}}-{compilePythonVer}"\n'
         f'ignoreAll:\n'
         f'  - {normalized}/.elyxbuilder/cache/*\n'
         f'compilationIgnore:\n'

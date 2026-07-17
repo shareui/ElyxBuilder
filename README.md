@@ -6,7 +6,7 @@ A CLI tool for building **ElyxCore** plugins — scaffold, compile, and package 
 
 - **Scaffolding** — generate a ready-to-go plugin structure with a single command
 - **AST validation** — catch syntax errors before packaging
-- **Python 3.11 compilation** — ship `.pyc` instead of source, with incremental cache
+- **Python 3.11 / 3.12 / 3.13 / 3.14 compilation** — ship `.pyc` instead of source, with incremental cache (configured via `compilePythonVer`)
 - **Flexible ignore lists** — fine-grained control over what goes into the archive
 - **Encryption** — protect your archive with AES-128/192/256 or ZipCrypto (Elyx Supports)
 
@@ -29,7 +29,7 @@ elyb build -c -v
 ## Requirements
 
 - Python >= 3.10
-- Python 3.11 — compilation only
+- Python 3.11 / 3.12 / 3.13 / 3.14 — compilation only (set via `compilePythonVer` in `config.json`)
 - pyzipper — encryption only (`pip install pyzipper`)
 
 ## License

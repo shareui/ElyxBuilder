@@ -26,7 +26,7 @@ elyb build -sc com.example.client myclient
 | `-nf`, `--no-folder` | Исключить директорию `elyxbuilder` из архива |
 | `-v`, `--verbose` | Подробный лог сборки |
 | `-a`, `--ast` | Проверить синтаксис `.py` через AST перед сборкой |
-| `-c [LEVEL]`, `--compile [LEVEL]` | Скомпилировать `.py` → `.pyc` (Python 3.11); LEVEL — уровень 0–2 (по умолчанию: 1) |
+| `-c [LEVEL]`, `--compile [LEVEL]` | Скомпилировать `.py` → `.pyc` (по умолчанию `compilePythonVer` из `config.json`, например 3.11/3.12/3.13/3.14); LEVEL — уровень 0–2 (по умолчанию: 1) |
 | `-r`, `--reset` | Очистить кэш компиляции перед сборкой (только с `--compile`) |
 | `-o [FILE...]`, `--obfuscation [FILE...]` | Обфусцировать исходники перед упаковкой; без файлов — весь source |
 | `-p METHOD PASS` | Зашифровать архив |

@@ -91,10 +91,12 @@ def openArchive(archivePath: str, encryptMethod: str | None, password: str | Non
     zf.setpassword(password.encode())
     return zf
 
-def findPython311() -> str | None:
-    candidates = ["python3.11", "python3", "python"]
+def findPython(targetVer: str) -> str | None:
+    # prefer an interpreter whose name pins the exact version,
+    # then fall back to generic names that report the right version
+    candidates = [f"python{targetVer}", "python3", "python"]
     if sys.platform == "win32":
-        candidates = ["python3.11", "python3", "python", "py"]
+        candidates = [f"python{targetVer}", "python3", "python", "py"]
     for name in candidates:
         try:
             result = subprocess.run(
@@ -102,11 +104,14 @@ def findPython311() -> str | None:
                 capture_output=True,
                 text=True,
             )
-            if result.returncode == 0 and "3.11" in result.stdout + result.stderr:
+            if result.returncode == 0 and targetVer in result.stdout + result.stderr:
                 return name
         except FileNotFoundError:
             continue
     return None
+
+def cacheDirName(compilePythonVer: str) -> str:
+    return "python" + compilePythonVer.replace(".", "")
 
 def loadManifest(manifestPath: str) -> dict:
     if not os.path.exists(manifestPath):
@@ -190,7 +195,7 @@ def buildMetaInfo(metaPath: str, compiled: bool, buildNum: int, compilePythonVer
         lines.append(f"client: \"{staticClient}\"")
     return original.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
 
-def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log, bar: "ProgressBar | None" = None, obfuscateAll: bool = False, obfuscateFiles: frozenset[str] = frozenset(), protectedNames: frozenset[str] = frozenset(), localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None, optimizeLevel: int = 1) -> tuple[bool, dict]:
+def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], log, bar: "ProgressBar | None" = None, obfuscateAll: bool = False, obfuscateFiles: frozenset[str] = frozenset(), protectedNames: frozenset[str] = frozenset(), localClassNames: frozenset[str] = frozenset(), obfConfig: dict | None = None, optimizeLevel: int = 1, compilePythonVer: str = "3.11") -> tuple[bool, dict]:
     if obfConfig is None:
         obfConfig = {}
     if optimizeLevel not in (0, 1, 2):
@@ -198,10 +203,10 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
         return False, {}
     import random
     from elyb.cmds.obfuscate import applyObfuscationPipeline
-    python311 = findPython311()
-    if python311 is None:
+    pythonBin = findPython(compilePythonVer)
+    if pythonBin is None:
         print(
-            "Please install Python3.11 for compilation. "
+            f"Please install Python {compilePythonVer} for compilation. "
             "After installation, reinstall the ElyxBuilder package."
         )
         return False, {}
@@ -261,7 +266,7 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
                     with open(tmpPath, "w", encoding="utf-8") as f:
                         f.write(source)
                     result = subprocess.run(
-                        [python311, "-c",
+                        [pythonBin, "-c",
                          f"import py_compile; py_compile.compile({tmpPath!r}, cfile={pycAbsPath!r}, dfile={relPath!r}, doraise=True, optimize={optimizeLevel})"],
                         capture_output=True,
                         text=True,
@@ -272,7 +277,7 @@ def compileSourceFiles(sourceDir: str, cacheDir: str, ignoreAbsPaths: set[str], 
                 log(f"  compile: {relPath} (obfuscated)")
             else:
                 result = subprocess.run(
-                    [python311, "-c",
+                    [pythonBin, "-c",
                      f"import py_compile; py_compile.compile({absPath!r}, cfile={pycAbsPath!r}, dfile={relPath!r}, doraise=True, optimize={optimizeLevel})"],
                     capture_output=True,
                     text=True,
@@ -510,7 +515,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
             fail("config.yml missing key: source (required for --compile)")
             return
         sourceDir = os.path.join(cwd, sourceRelPath)
-        cacheDir = os.path.join(cwd, ".elyx", "cache", "python311")
+        cacheDir = os.path.join(cwd, ".elyx", "cache", cacheDirName(compilePythonVer))
 
         if resetCache and os.path.exists(cacheDir):
             import shutil
@@ -530,7 +535,7 @@ def runBuild(noAssets: bool = False, noFolder: bool = False, verbose: bool = Fal
             log(f"obfuscation: collected {len(protectedNames)} protected name(s)")
 
         status("Compiling to bytecode")
-        ok, _ = compileSourceFiles(sourceDir, cacheDir, ignoreAbsPaths, log, bar, obfuscateAll, obfuscateFiles, protectedNames, localClassNames, obfConfig, compileLevel)
+        ok, _ = compileSourceFiles(sourceDir, cacheDir, ignoreAbsPaths, log, bar, obfuscateAll, obfuscateFiles, protectedNames, localClassNames, obfConfig, compileLevel, compilePythonVer)
         if not ok:
             bar.stop()
             incrementFailedBuildStats(builderDir)

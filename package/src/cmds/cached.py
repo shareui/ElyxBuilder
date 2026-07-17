@@ -18,6 +18,15 @@ def loadJson(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def cacheDirName(compilePythonVer: str) -> str:
+    return "python" + compilePythonVer.replace(".", "")
+
+def loadCompilePythonVer() -> str:
+    configPath = os.path.join(os.path.dirname(__file__), "..", "config.json")
+    with open(configPath, "r", encoding="utf-8") as f:
+        elyxConfig = json.load(f)
+    return elyxConfig.get("compilePythonVer", "3.11")
+
 def findRefmap(cwd: str) -> tuple[str, dict] | None:
     for name in ("refmap.yml", "refmap.yaml", "refmap.json"):
         path = os.path.join(cwd, name)
@@ -75,7 +84,7 @@ def runCached() -> None:
         sys.exit(1)
 
     sourceDir = os.path.join(cwd, sourceRelPath)
-    cacheDir = os.path.join(cwd, ".elyx", "cache", "python311")
+    cacheDir = os.path.join(cwd, ".elyx", "cache", cacheDirName(loadCompilePythonVer()))
     manifestPath = os.path.join(cacheDir, "manifest.json")
 
     if not os.path.exists(manifestPath):
@@ -85,7 +94,7 @@ def runCached() -> None:
     manifest = loadManifest(manifestPath)
     rawIgnore = config.get("compilationIgnore") or []
     ignoreAbsPaths = {os.path.normpath(os.path.join(cwd, p)) for p in rawIgnore}
-    cacheDirDisplay = os.path.join(".elyx", "cache", "python311").replace(os.sep, "/")
+    cacheDirDisplay = os.path.join(".elyx", "cache", cacheDirName(loadCompilePythonVer())).replace(os.sep, "/")
     print(f"Cache: {cacheDirDisplay}")
 
     counts = {"modified": 0, "new": 0, "ok": 0, "ignored": 0}
