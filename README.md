@@ -23,8 +23,8 @@ elyb build -c -v
 
 ## Documentation
 
-- [English](https://github.com/shareui/ElyxBuilder/blob/main/docs)
-- [Русский](https://github.com/shareui/ElyxBuilder/blob/main/docs)
+- [English](docs/en/)
+- [Русский](docs/ru/)
 
 ## Requirements
 
